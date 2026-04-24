@@ -1,175 +1,283 @@
+
+
 """
-AgentScope SQLite 记忆快速上手
-================================
-基于 AsyncSQLAlchemyMemory，提供持久化的对话记忆存储。
+AgentScope + mem0 记忆管理器
+=============================
+基于 mem0 框架的记忆模块，使用 ChromaDB 作为本地向量存储，
+SQLite 作为历史记录数据库。
 
-功能：
-- 创建 SQLite 异步记忆库
-- 按 user_id / session_id 隔离记忆
-- 添加、读取、删除、按标记筛选记忆
+与 AgentScope MemoryBase 的区别：
+- 支持语义搜索召回（search）
+- 支持向量相似度检索
+- 返回 dict 列表而非 Msg 列表，由调用方自行决定如何使用
 
-运行：
-    python memory_sqlite.py
+使用方法：
+    from scripts.agent.memory_mem0 import Mem0MemoryManager
+
+    manager = Mem0MemoryManager(user_id="user_1", session_id="chat_001")
+    manager.add("你好", name="fafa", role="user")
+    results = manager.search("问候", top_k=5)
 """
 
-import asyncio
-from sqlalchemy.ext.asyncio import create_async_engine
-from agentscope.memory import AsyncSQLAlchemyMemory
-from agentscope.message import Msg
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import config
+
+from datetime import datetime
+from typing import Any, Optional
 
 
-# =============================================================================
-# 封装好的 SQLite 记忆管理器
-# =============================================================================
+from mem0 import Memory
 
 
-class SQLiteMemoryManager:
-    """基于 SQLite 的 AgentScope 记忆管理器。"""
 
-    def __init__(self, db_path: str = "./data/db/agent_memory.db") -> None:
-        """初始化并创建异步引擎。
 
-        Args:
-            db_path: SQLite 数据库文件路径，默认放在 ./data/db/ 目录下。
-        """
-        self.engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+class Mem0MemoryManager:
+    """基于 mem0 的记忆管理器。
 
-    async def create_memory(
+    内部使用 ChromaDB 做向量存储，SQLite 做历史记录，
+    通过 SiliconFlow 的 OpenAI 兼容接口调用 Embedding 和 LLM。
+
+    Attributes:
+        user_id: 用户 ID，用于多用户隔离。
+        session_id: 会话 ID，记录在 metadata 中。
+        memory: mem0 的 Memory 实例。
+    """
+
+    def __init__(
         self,
         user_id: str = "default_user",
         session_id: str = "default_session",
-    ) -> AsyncSQLAlchemyMemory:
-        """创建一个新的 AsyncSQLAlchemyMemory 实例。
+    ) -> None:
+        self.user_id = user_id
+        self.session_id = session_id
+
+        # mem0 配置：ChromaDB + OpenAI 兼容 API
+        mem0_config = {
+            "vector_store": {
+                "provider": "chroma",
+                "config": {
+                    "path": config.MEM0_VECTOR_STORE_PATH,
+                },
+            },
+            "llm": {
+                "provider": "openai",
+                "config": {
+                    "model": config.MODEL_NAME,
+                    "api_key": config.OPENAI_API_KEY,
+                    "openai_base_url": config.OPENAI_BASE_URL,
+                },
+            },
+            "embedder": {
+                "provider": "openai",
+                "config": {
+                    "model": config.EMBEDDING_MODEL_NAME,
+                    "api_key": config.OPENAI_API_KEY,
+                    "openai_base_url": config.OPENAI_BASE_URL,
+                },
+            },
+            "history_db_path": config.MEM0_HISTORY_DB_PATH,
+        }
+
+        self.memory = Memory.from_config(mem0_config)
+
+
+
+    # =====================================================================
+    # 写入
+    # =====================================================================
+
+    def add(
+        self,
+        content: str,
+        name: str,
+        role: str,
+        msg_type: str = "",
+        timestamp: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """添加一条记忆。
 
         Args:
-            user_id: 用户 ID，用于多用户隔离。
-            session_id: 会话 ID，用于同用户下的多会话隔离。
-
-        Returns:
-            AsyncSQLAlchemyMemory 实例。
+            content: 记忆文本内容（原始对话文本）。
+            name: Agent 名称或用户名称。
+            role: "assistant" 或 "user"。
+            msg_type: 记忆来源类型。可选：
+                ""（默认）, "from_user", "from_agent_summary", "from_daily_summary"。
+            timestamp: 时间戳，格式 YYYY-MM-DD HH:MM:SS。
+                       为 None 时自动使用当前时间。
+            metadata: 额外的自定义元数据（会合并到内部 metadata 中）。
         """
-        return AsyncSQLAlchemyMemory(
-            engine_or_session=self.engine,
-            user_id=user_id,
-            session_id=session_id,
+        if timestamp is None:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        meta: dict[str, Any] = {
+            "name": name,
+            "role": role,
+            "session_id": self.session_id,
+            "timestamp": timestamp,
+            "type": msg_type,
+        }
+        if metadata:
+            meta.update(metadata)
+
+        # infer=False：禁止 mem0 调用 LLM 对内容进行 fact extraction，
+        # 直接存储原始文本，确保 content 不被改写。
+        self.memory.add(
+            content,
+            user_id=self.user_id,
+            metadata=meta,
+            infer=False,
         )
 
-    async def save(
-        self,
-        memory: AsyncSQLAlchemyMemory,
-        msg: Msg,
-        mark: str | None = None,
-    ) -> None:
-        """向记忆中添加一条消息。
+    # =====================================================================
+    # 读取 / 召回
+    # =====================================================================
+
+    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        """语义搜索记忆，返回与 query 最相关的 top_k 条记忆。
 
         Args:
-            memory: AsyncSQLAlchemyMemory 实例。
-            msg: AgentScope 的 Msg 消息对象。
-            mark: 可选的标记字符串，用于后续筛选（如 "hint", "important"）。
-        """
-        if mark:
-            await memory.add(msg, marks=mark)
-        else:
-            await memory.add(msg)
-
-    async def load_all(self, memory: AsyncSQLAlchemyMemory) -> list[Msg]:
-        """读取当前记忆中的所有消息。
+            query: 查询文本。
+            top_k: 返回结果数量上限。
 
         Returns:
-            Msg 对象列表。
+            dict 列表，每条包含以下字段：
+                - id: 记忆 UUID
+                - name: 名称
+                - role: "assistant" | "user"
+                - timestamp: 时间戳
+                - content: 原始记忆文本
+                - session_id: 会话 ID
+                - type: 记忆来源类型
+                - score: 相似度分数（0~1，越高越相关）
         """
-        return await memory.get_memory()
+        raw = self.memory.search(
+            query,
+            filters={"user_id": self.user_id},
+            top_k=top_k,
+        )
+        return self._format_results(raw)
 
-    async def load_by_mark(
-        self,
-        memory: AsyncSQLAlchemyMemory,
-        mark: str,
-    ) -> list[Msg]:
-        """按标记读取消息。
+    def get_all(self, top_k: int = 100) -> list[dict[str, Any]]:
+        """获取该用户的全部记忆。
 
         Args:
-            memory: AsyncSQLAlchemyMemory 实例。
-            mark: 标记字符串。
+            top_k: 返回数量上限。
 
         Returns:
-            带有该标记的 Msg 列表。
+            dict 列表，字段同 search()。
         """
-        return await memory.get_memory(mark=mark)
+        raw = self.memory.get_all(
+            filters={"user_id": self.user_id},
+            top_k=top_k,
+        )
+        return self._format_results(raw)
 
-    async def delete_by_mark(
-        self,
-        memory: AsyncSQLAlchemyMemory,
-        mark: str,
-    ) -> int:
-        """按标记删除消息。
+    # =====================================================================
+    # 删除
+    # =====================================================================
+
+    def delete(self, memory_id: str) -> None:
+        """删除单条记忆。
+
+        Args:
+            memory_id: 记忆的 UUID（即返回 dict 中的 "id" 字段）。
+        """
+        self.memory.delete(memory_id)
+
+    def clear(self) -> int:
+        """清空该用户的全部记忆。
 
         Returns:
-            被删除的消息数量。
+            被删除的记忆数量。
         """
-        return await memory.delete_by_mark(mark)
+        all_memories = self.memory.get_all(filters={"user_id": self.user_id})
+        count = 0
+        for item in all_memories.get("results", []):
+            self.memory.delete(item["id"])
+            count += 1
+        return count
 
-    async def clear(self, memory: AsyncSQLAlchemyMemory) -> None:
-        """清空当前记忆。"""
-        await memory.clear()
+    # =====================================================================
+    # 资源释放
+    # =====================================================================
 
-    async def close(self) -> None:
-        """关闭数据库引擎，释放连接。"""
-        await self.engine.dispose()
+    def close(self) -> None:
+        """关闭 mem0 资源。
+
+        注：mem0 的 Memory 类没有显式 close 方法，此处为接口预留。
+        """
+        pass
+
+    # =====================================================================
+    # 内部辅助
+    # =====================================================================
+
+    def _format_results(self, raw: dict[str, Any]) -> list[dict[str, Any]]:
+        """将 mem0 的原始返回格式转换为用户要求的标准 dict 列表。"""
+        formatted: list[dict[str, Any]] = []
+        for item in raw.get("results", []):
+            meta = item.get("metadata", {}) or {}
+            formatted.append(
+                {
+                    "id": item.get("id", ""),
+                    "name": meta.get("name", ""),
+                    "role": meta.get("role", ""),
+                    "timestamp": meta.get("timestamp", ""),
+                    "content": item.get("memory", ""),
+                    "session_id": meta.get("session_id", self.session_id),
+                    "type": meta.get("type", ""),
+                    "score": item.get("score", 0.0),
+                }
+            )
+        return formatted
 
 
 # =============================================================================
-# 演示用法
+# 快速调用示例（直接运行本文件即可测试）
 # =============================================================================
 
 
-async def main() -> None:
-    # 1. 初始化管理器（数据库文件会自动创建）
-    manager = SQLiteMemoryManager(db_path="./data/db/agent_memory.db")
+def demo() -> None:
+    """非异步演示：展示 Mem0MemoryManager 的基本用法。"""
+    print("=== Mem0MemoryManager 快速演示 ===\n")
 
-    # 2. 为 "user_1" 的 "chat_001" 会话创建记忆
-    memory = await manager.create_memory(
-        user_id="user_1",
-        session_id="chat_001",
+    manager = Mem0MemoryManager(
+        user_id="demo_user",
+        session_id="demo_session",
     )
 
-    # 3. 保存普通对话消息
-    await manager.save(memory, Msg("user", "你好", "user"))
-    await manager.save(memory, Msg("assistant", "你好呀！", "assistant"))
-    await manager.save(memory, Msg("user", "今天天气怎么样？", "user"))
+    # 1. 添加记忆
+    print("1. 添加记忆...")
+    manager.add("你好，我是fafa，我喜欢喝咖啡", name="fafa", role="user", msg_type="from_user")
+    manager.add("你好fafa，很高兴认识你", name="assistant", role="assistant")
+    manager.add("今天天气真不错", name="fafa", role="user", msg_type="from_user")
+    print("   ✅ 已添加 3 条记忆\n")
 
-    # 4. 保存带标记的提示消息（如系统提示、重要上下文）
-    await manager.save(
-        memory,
-        Msg("system", "<system-hint>回复请保持简洁。</system-hint>", "system"),
-        mark="hint",
-    )
+    # 2. 语义搜索
+    print("2. 语义搜索 '喜欢喝什么' (top_k=3)...")
+    results = manager.search("我喜欢喝什么", top_k=3)
+    for r in results:
+        print(f"   [{r['role']}] {r['name']}: {r['content']} (score={r['score']:.3f})")
+    print()
 
-    # 5. 读取所有记忆
-    print("📦 所有记忆：")
-    all_msgs = await manager.load_all(memory)
-    for msg in all_msgs:
-        print(f"   [{msg.role}] {msg.name}: {msg.content}")
+    # 3. 获取全部
+    print("3. 获取全部记忆...")
+    all_memories = manager.get_all(top_k=10)
+    for r in all_memories:
+        print(f"   [{r['role']}] {r['name']}: {r['content']}")
+    print()
 
-    # 6. 按标记读取
-    print("\n🏷️  带 'hint' 标记的记忆：")
-    hint_msgs = await manager.load_by_mark(memory, mark="hint")
-    for msg in hint_msgs:
-        print(f"   [{msg.role}] {msg.name}: {msg.content}")
+    # 4. 删除测试
+    print("4. 清空记忆...")
+    deleted = manager.clear()
+    print(f"   ✅ 已删除 {deleted} 条记忆\n")
 
-    # 7. 删除标记消息
-    deleted = await manager.delete_by_mark(memory, mark="hint")
-    print(f"\n🗑️  已删除 {deleted} 条带 'hint' 标记的消息")
-
-    print("\n📦 删除后的记忆：")
-    remaining = await manager.load_all(memory)
-    for msg in remaining:
-        print(f"   [{msg.role}] {msg.name}: {msg.content}")
-
-    # 8. 关闭资源
-    await memory.close()
-    await manager.close()
-    print("\n✅ SQLite 记忆演示完成")
+    print("=== 演示完成 ===")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    demo()

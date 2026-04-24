@@ -26,8 +26,6 @@ from scripts.tools.control_vts import express_emotion, set_vts_controller
 
 class SimpleAgent(AgentBase):
     """最简自定义智能体：单步调用大模型，无 ReAct 循环。
-
-    可直接替换 main2.py 中的 ReActAgent（对话场景）。
     本身不处理工具调用，如需触发外部动作（如 VTS），在拿到回复后由外部代码处理。
     """
 
