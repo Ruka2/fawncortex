@@ -10,7 +10,7 @@
 """
 
 import json
-
+import time
 import asyncio
 
 from agentscope.agent import AgentBase
@@ -18,7 +18,11 @@ from agentscope.message import Msg
 
 from .task_plan import TaskPlan, TaskNode, NodeType, ExecutionMode    # todo: ExecutionMode暂时没用到，待办
 from .output_scheduler import OutputScheduler
-from ..shared.shared_context import SharedContext
+from .shared_context import SharedContext
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from scripts.logger.latency_tracker import LatencyTracker
 
 
 class TaskExecutor:
@@ -35,10 +39,12 @@ class TaskExecutor:
         agents: dict[str, AgentBase],
         scheduler: OutputScheduler,
         shared_ctx: SharedContext,
+        latency_tracker: Optional["LatencyTracker"] = None,
     ):
         self.agents = agents
         self.scheduler = scheduler
         self.shared_ctx = shared_ctx
+        self.latency_tracker = latency_tracker
         self._current_tasks: list[asyncio.Task] = []
         self._running = True
         self._last_quick_chat_reply: str = ""  # 记录本轮 quick_chat 的 assistant 输出
@@ -57,7 +63,7 @@ class TaskExecutor:
         while idx < len(plan.nodes) and self._running:
             node = plan.nodes[idx]
 
-            # 执行当前节点
+            # 执行当前节点（包装计时）
             if node.blocking:
                 try:
                     await self._execute_node(node, user_msg)
@@ -80,7 +86,10 @@ class TaskExecutor:
                     traceback.print_exception(type(result), result, result.__traceback__)
             self._current_tasks.clear()
 
-        # print("✅ 任务计划执行完毕")
+        # 轮次结束：计算并打印延迟报告
+        if self.latency_tracker:
+            clarification_option = self.shared_ctx.peek().get("clarification_option", "ignore")
+            self.latency_tracker.finish_round(clarification_option)
 
     async def interrupt(self) -> None:
         """中断当前执行。
@@ -103,7 +112,9 @@ class TaskExecutor:
 
     async def _execute_node(self, node: TaskNode, user_msg: Msg) -> None:
         """执行单个任务节点。"""
-        print(f"▶️  执行节点: {node.name} ({node.node_type.value}, blocking={node.blocking})")
+        print(f"▶️ 执行节点: {node.name} ({node.node_type.value}, blocking={node.blocking})")
+
+        start_ts = time.perf_counter()
 
         if node.node_type == NodeType.QUICK_CHAT:
             await self._exec_quick_chat(node, user_msg)
@@ -115,6 +126,18 @@ class TaskExecutor:
             await self._exec_summary_chat(node, user_msg)
         else:
             print(f"⚠️  未知节点类型: {node.node_type}")
+
+        end_ts = time.perf_counter()
+
+        # 记录本节点耗时
+        if self.latency_tracker:
+            agent_name = node.agents[0] if node.agents else "unknown"
+            self.latency_tracker.record_agent(
+                agent_name=agent_name,
+                node_type=node.node_type.value,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
 
 
     # -------------------------------------------------------------------------

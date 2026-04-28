@@ -19,6 +19,10 @@ from agentscope.message import Msg
 
 from components.tts import SiliconFlowCosyVoice
 from scripts.tools.control_vts import express_emotion
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..logger.latency_tracker import LatencyTracker
 
 
 class Priority(Enum):
@@ -52,8 +56,9 @@ class OutputScheduler:
         await scheduler.interrupt()
     """
 
-    def __init__(self, tts: SiliconFlowCosyVoice):
+    def __init__(self, tts: SiliconFlowCosyVoice, latency_tracker: Optional["LatencyTracker"] = None):
         self.tts = tts
+        self.latency_tracker = latency_tracker
         self._queue: asyncio.PriorityQueue[tuple[int, int, OutputTask]] = asyncio.PriorityQueue()
         self._seq_counter = 0
         self._speaking_lock = asyncio.Lock()
@@ -116,6 +121,10 @@ class OutputScheduler:
                 break
 
             async with self._speaking_lock:
+                # 标记本轮首次语音开始播放（用户角度延迟终点）
+                if self.latency_tracker:
+                    self.latency_tracker.mark_first_sound()
+
                 # 触发表情
                 try:
                     express_emotion(action=task.emotion, duration=10.0, intensity=1.0)  # fixme: 此处需要debug排查问题
@@ -123,7 +132,7 @@ class OutputScheduler:
                     print(f"⚠️  表情触发失败: {e}")
 
                 # TTS 播报（包装为可取消的任务）
-                print(f"🔊✅ {task.source}: {task.text}")
+                print(f"✅ {task.source}: {task.text}")
                 self._current_tts_task = asyncio.create_task(
                     self._speak_async(task.text)
                 )

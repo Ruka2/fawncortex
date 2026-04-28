@@ -102,7 +102,7 @@ class SiliconFlowCosyVoice:
             if chunk:
                 if first_chunk_time is None:
                     first_chunk_time = time.perf_counter() - t0
-                    # print(f"⏱️ 语音合成(TTS): 首音频块延迟 {first_chunk_time:.4f}ms | 音频大小 {len(audio_bytes)} bytes, {chunk_count} chunks | 总生成耗时 {total_time:.2f}s")
+                    # print(f"语音合成(TTS): 首音频块延迟 {first_chunk_time:.4f}ms | 音频大小 {len(audio_bytes)} bytes, {chunk_count} chunks | 总生成耗时 {total_time:.2f}s")
 
                 audio_buffer.write(chunk)
                 chunk_count += 1
@@ -115,7 +115,7 @@ class SiliconFlowCosyVoice:
         #     f"{chunk_count} chunks | 总耗时 {total_time:.2f}s"
         # )
         
-        print(f"⏱️  语音合成(TTS): 首音频块延迟 {first_chunk_time:.3f}s 总TTS处理耗时 {total_time:.3f}s | 音频大小 {len(audio_bytes)} bytes, {chunk_count} chunks")
+        print(f"[TTS] 首音频块延迟 {first_chunk_time:.3f}s | 总TTS处理耗时 {total_time:.3f}s | 音频大小 {len(audio_bytes)} bytes, {chunk_count} chunks")
 
         # 保存到文件
         if save_path:

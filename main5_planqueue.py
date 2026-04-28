@@ -11,6 +11,7 @@ import config
 # 核心基础依赖
 import json
 import asyncio
+import time
 
 # AgentScope 基础依赖
 from agentscope.model import OpenAIChatModel
@@ -22,11 +23,10 @@ from scripts.agent.emotion_agent import EmotionAgent
 from scripts.agent.brain_agent import BrainAgent
 from scripts.agent.orchestrator_agent import OrchestratorAgent
 
-from scripts.pipeline.task_plan import TaskNode, TaskPlan
+from scripts.pipeline.task_plan import TaskPlan
 from scripts.pipeline.output_scheduler import OutputScheduler
 from scripts.pipeline.task_executor import TaskExecutor
-
-from scripts.shared.shared_context import SharedContext
+from scripts.pipeline.shared_context import SharedContext
 
 from scripts.agent.memory import create_long_term_memory
 
@@ -35,6 +35,9 @@ from scripts.tools.search_memory import set_memory_manager
 # 外部非智能体执行工具
 from components.tts import SiliconFlowCosyVoice
 
+# 日志打印代码
+from scripts.logger.latency_tracker import LatencyTracker
+from scripts.logger.logger import enable_file_logging
 
 
 # 基础用户配置
@@ -44,9 +47,15 @@ USER_NAME = "fafa"
 
 async def main() -> None:
     
+    # 启用终端日志收集（所有 print 自动写入 logs/ 目录）
+    enable_file_logging()
+
+    # 初始化延迟追踪器（可选依赖，传 None 则关闭计时）
+    latency_tracker = LatencyTracker()
+
     # 初始化TTS与输出调度器
     tts = SiliconFlowCosyVoice()
-    scheduler = OutputScheduler(tts)
+    scheduler = OutputScheduler(tts, latency_tracker=latency_tracker)
     asyncio.create_task(scheduler.run())
     print("[init] 输出调度器已启动")
 
@@ -84,52 +93,88 @@ async def main() -> None:
     print(f"[init] 智能体已创建（{list(agents.keys())}）")
 
     # 初始化任务执行器
-    executor = TaskExecutor(agents, scheduler, shared_ctx)
+    executor = TaskExecutor(agents, scheduler, shared_ctx, latency_tracker=latency_tracker)
     print("[init] 任务执行器已创建")
     
     
     
+    
+    ##################################################################################
     # 主循环
     round_num = 0
 
-    while True:
-        user_input = (
-            await asyncio.get_event_loop().run_in_executor(None, input, "👤 你: ")
-        ).strip()
+    try:
+        while True:
+            user_input = (
+                await asyncio.get_event_loop().run_in_executor(None, input, "👤 你: ")
+            ).strip()
 
-        if not user_input:
-            continue
+            if not user_input:
+                continue
 
-        round_num += 1
-        msg = Msg(name="user", content=user_input, role="user")
-        print(f"\n--- 第 {round_num} 轮 ---")
+            round_num += 1
+            msg = Msg(name="user", content=user_input, role="user")
+            print(f"\n=== 第 {round_num} 轮 ===")
 
-        # ── 打断上一轮，当用户新输入到达时，并对部分执行调度器做打断 ──
-        # await executor.interrupt()
-        # await shared_ctx.clear()
-        # await scheduler.interrupt()
+            # 开始新一轮计时
+            latency_tracker.start_round(round_num, user_input)
 
-        # 重置核心chat_agent的prompt（上轮的重置）
-        chat_agent.reset_prompt()
+            # ── 打断上一轮，当用户新输入到达时，并对部分执行调度器做打断 ──
+            await executor.interrupt()
+            # await shared_ctx.clear()
+            await scheduler.interrupt()
 
-        # ── 编排智能体生成任务计划 ──
-        plan_dict = await orchestrator.plan(msg)
-        print(f"编排智能体输出任务队列: {json.dumps(plan_dict, ensure_ascii=False)}")
+            # 重置核心chat_agent的prompt（上轮的重置）
+            chat_agent.reset_prompt()
 
-        # 装载编排智能体的输出结果
-        # Orchestrator 返回格式: {"node_list": ["quick_chat", "deep_think", ...]}
-        nodes_data = plan_dict.get("node_list", [])
-        plan = TaskPlan.from_raw_list(
-            raw_nodes=nodes_data,
-            version=round_num,
-            source="orchestrator",
-        )
-        # print(f"任务队列: {' → '.join(n.name for n in plan.nodes)}")
-        
-        # ── 执行任务计划 ──
-        await executor.execute(plan, msg)
-        print(f"--- 第 {round_num} 轮结束 ---\n")
+            # ── 编排智能体生成任务计划 ──
+            orch_start = time.perf_counter()
+            plan_dict = await orchestrator.plan(msg)
+            orch_end = time.perf_counter()
+            latency_tracker.record_agent(
+                agent_name="orchestrator",
+                node_type="plan",
+                start_ts=orch_start,
+                end_ts=orch_end,
+            )
+            # print(f"编排智能体输出任务队列: {json.dumps(plan_dict, ensure_ascii=False)}")
+
+            # 装载编排智能体的输出结果
+            # Orchestrator 返回格式: {"node_list": ["quick_chat", "deep_think", ...]}
+            nodes_data = plan_dict.get("node_list", [])
+            plan = TaskPlan.from_raw_list(
+                raw_nodes=nodes_data,
+                version=round_num,
+                source="orchestrator",
+            )
+            # print(f"任务队列: {' → '.join(n.name for n in plan.nodes)}")
+            
+            # ── 执行任务计划 ──
+            await executor.execute(plan, msg)
+            
+            print(f"=== 第 {round_num} 轮结束 ===")
+
+    except asyncio.CancelledError:
+        # asyncio.run() 被 Ctrl+C 取消时正常退出
+        pass
+    finally:
+        # 优雅关闭资源
+        print("[Shutdown] 正在关闭输出调度器...")
+        await scheduler.stop()
+        print("[Shutdown] 输出调度器已关闭")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("[Logger] 程序已正常中断")
+    finally:
+        # 兜底：先关闭日志文件，再立即退出进程
+        # （避免解释器关闭 ThreadPoolExecutor 线程时再次收到 Ctrl+C 导致 fatal error）
+        import sys
+        from scripts.logger.logger import TeeLogger
+        if isinstance(sys.stdout, TeeLogger):
+            sys.stdout.close()
+        import os
+        os._exit(0)
