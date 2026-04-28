@@ -45,6 +45,7 @@ class EmotionAgent(SimpleAgent):
             model=model,
             memory=memory or InMemoryMemory(),
             formatter=formatter or OpenAIChatFormatter(),
+            save_to_memory=True,
         )
 
     @staticmethod

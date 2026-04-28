@@ -25,55 +25,8 @@ class OrchestratorAgent(SimpleAgent):
     """任务编排智能体。
 
     输入：用户消息 + 最近对话历史
-    输出：TaskPlan JSON
+    输出：TaskPlan List
     """
-
-    # DEFAULT_SYS_PROMPT = (
-    #     "你是任务编排器（Orchestrator）。你的唯一职责是判断当前用户输入的复杂度，"
-    #     "并输出一个任务执行队列的 JSON。\n"
-    #     "\n"
-    #     "## 判断规则参考\n"
-    #     "1. 简单任务（greeting、闲聊、情绪表达、简单问答）：\n"
-    #     "   → 只需要前台快速响应，不需要深度思考。\n"
-    #     "2. 复杂任务（涉及用户历史记忆核对、事实纠正、深度建议、多步推理）：\n"
-    #     "   → 需要前台先快速安抚/响应，然后后台大脑深度思考，最后根据思考结果追加响应。\n"
-    #     "3. 追问澄清（当用户问题有歧义，或大脑发现前台回复有事实错误时）：\n"
-    #     "\n"
-    #     "## node_type 可用枚举值\n"
-    #     "- quick_chat: 简单请求问题下，直接与用户回复，快速闲聊\n"
-    #     "- deep_think: 问题可能较难，需要智能体深度思考\n"
-    #     # "- clarify: 澄清/追答，发现错误后的插队播报\n"
-    #     "\n"
-    #     "## blocking 可用布尔类型\n"
-    #     "- false: 简单请求问题，任务不需要阻塞可由子智能体快速解决\n"
-    #     "- true: 问题困难的情况下，需要子智能体集群经过多个深度思考，所以需要阻塞标签待智能体都回复后给出答案的标记\n"
-    #     "\n"
-    #     "## 输出格式（严格 JSON，不要输出其他内容）\n"
-    #     "```json\n"
-    #     "{\n"
-    #     # '  "complexity": "simple" | "complex",\n'
-    #     # '  "reasoning": "简要说明判断原因（30字以内）",\n'
-    #     '  "nodes": [\n'
-    #     '    {\n'
-    #     '      "node_type": "quick_chat",\n'
-    #     # '      "name": "快速响应",\n'
-    #     '      "blocking": false,\n'
-    #     # '      "mode": "gather"\n'
-    #     '    },\n'
-    #     '    {\n'
-    #     '      "node_type": "deep_think",    # 若需要深度思考，需要为列表增加此节点\n'
-    #     # '      "name": "深度思考",\n'
-    #     '      "blocking": true,\n'
-    #     # '      "mode": "gather"\n'
-    #     '    },\n'
-    #     '  ]\n'
-    #     "}\n"
-    #     "```\n"
-    #     "\n"
-    #     "## 示例\n"
-    #     "用户说'你好' → 简单问题输出的队列只有包含node_type=quick_chat的列表\n"
-    #     "用户说'我想你帮我解决个很难的问题……' → 复杂问题输出的队列需要包含node_type=quick_chat和=deep_think的列表\n"
-    # )
     
     DEFAULT_SYS_PROMPT = (
         "你是一个智能体集群的任务编排器，这个智能体集群正在响应用户的对话任务，你作为后台执行的决策器，你的唯一职责是判断当前用户输入的复杂度，以此来编辑一个任务执行队列，让智能体集群更好的与用户持续对话。\n"
@@ -99,6 +52,11 @@ class OrchestratorAgent(SimpleAgent):
         "\n"
         "## 输出格式示例（严格 JSON，不要输出其他内容）\n"
         "如果为简单闲聊"
+        "```json\n"
+        '{"node_list": ["quick_chat"]\n'
+        "}\n"
+        "```\n"
+        "如果为简单闲聊且可以展示自己表情行为的一面"
         "```json\n"
         '{"node_list": ["quick_chat", "emotion_action"]\n'
         "}\n"
@@ -128,6 +86,7 @@ class OrchestratorAgent(SimpleAgent):
             model=model,
             memory=memory or InMemoryMemory(),
             formatter=formatter or OpenAIChatFormatter(),
+            save_to_memory=True,
         )
 
     async def plan(self, user_msg: Msg) -> dict:
@@ -157,7 +116,7 @@ class OrchestratorAgent(SimpleAgent):
                 plan = {
                     "node_list": [
                         "quick_chat",
-                        "emotion_action"
+                        # "emotion_action"
                     ]
                 }
                 print("⚠️  OrchestratorAgent 输出 JSON 解析失败，使用默认简单计划。")

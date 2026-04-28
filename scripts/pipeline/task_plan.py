@@ -2,16 +2,13 @@
 任务计划（Task Plan）
 =====================
 定义任务编排中的节点（TaskNode）与计划（TaskPlan）数据结构。
+本文件taskplan通常指作为数据结构使用
+# todo: 本文件目前版本只能做数据结构，而task_plan的初衷是希望有个类文件能够管理所有输入进来的数据之后能够结构化的异步选择、每个智能体所应该设置什么特性
 """
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from enum import Enum
-
-# 可用的Agent集群任务列表
-AGENT_LIST_FAST_CHAT = ["chat"]
-AGENT_LIST_DEEP_THINK = ["brain"]
-
 
 class NodeType(Enum):
     """任务节点类型。"""
@@ -27,6 +24,35 @@ class ExecutionMode(Enum):
     SEQUENTIAL = "seq"     # 顺序执行
 
 
+# 节点类型默认配置表（根据 node_type 自动填充缺失字段）
+NODE_TYPE_DEFAULTS: dict[NodeType, dict[str, Any]] = {
+    NodeType.QUICK_CHAT: {
+        "name": "快速响应",
+        "blocking": False,
+        "mode": ExecutionMode.GATHER,
+        "agents": ["chat"],
+    },
+    NodeType.DEEP_THINK: {
+        "name": "深度思考",
+        "blocking": True,
+        "mode": ExecutionMode.GATHER,
+        "agents": ["brain"],
+    },
+    NodeType.EMOTION_ACTION: {
+        "name": "表情动作",
+        "blocking": False,
+        "mode": ExecutionMode.GATHER,
+        "agents": ["emotion"],
+    },
+    NodeType.SUMMARY_CHAT: {
+        "name": "总结回复",
+        "blocking": True,
+        "mode": ExecutionMode.GATHER,
+        "agents": ["chat"],
+    },
+}
+
+
 @dataclass
 class TaskNode:
     """任务节点：描述一个执行步骤。
@@ -34,7 +60,7 @@ class TaskNode:
     Attributes:
         node_type: 节点类型。
         name: 可读名称。
-        agent_names: 参与此节点的Agent名称列表。
+        agents: 执行此节点的主 Agent key（用于 self.agents.get() 与 scheduler source）。
         blocking: 是否阻塞后续节点（True=等待完成后再执行下一个）。
         mode: 多Agent执行模式。
         post_condition: 完成后的状态标识（供大脑反思判断）。
@@ -42,7 +68,7 @@ class TaskNode:
     """
     node_type: NodeType
     name: str
-    agent_names: list[str] = field(default_factory=list)
+    agents: str = ""
     blocking: bool = True
     mode: ExecutionMode = ExecutionMode.GATHER
     post_condition: Optional[str] = None
@@ -52,7 +78,7 @@ class TaskNode:
         return {
             "node_type": self.node_type.value,
             "name": self.name,
-            "agent_names": self.agent_names,
+            "agents": self.agents,
             "blocking": self.blocking,
             "mode": self.mode.value,
             "post_condition": self.post_condition,
@@ -68,7 +94,7 @@ class TaskNode:
         2. 简化字典: {"node_type": "quick_chat", "blocking": false}
         3. 完整字典: {"node_type": "...", "name": "...", "agent_names": [...]}
 
-        会根据 node_type 的硬规则自动填充缺失字段（name/agent_names/blocking/mode）。
+        会根据 node_type 的硬规则自动填充缺失字段（name/agents/blocking/mode）。
         """
         # --- 统一输入格式：字符串 → 字典 ---
         if isinstance(d, str):
@@ -94,48 +120,13 @@ class TaskNode:
             mode = ExecutionMode.GATHER
 
         # --- 根据 node_type 硬规则填充默认值 ---
-        defaults = {
-            NodeType.QUICK_CHAT: {
-                "name": "快速响应",
-                "agent_names": ["qucik_chat"],
-                "blocking": False,
-                "mode": ExecutionMode.GATHER,
-            },
-            NodeType.DEEP_THINK: {
-                "name": "深度思考",
-                "agent_names": ["deep_think"],
-                "blocking": True,
-                "mode": ExecutionMode.GATHER,
-            },
-            NodeType.EMOTION_ACTION: {
-                "name": "表情动作",
-                "agent_names": ["emotion"],
-                "blocking": False,
-                "mode": ExecutionMode.GATHER,
-            },
-            NodeType.SUMMARY_CHAT: {
-                "name": "总结回复",
-                "agent_names": ["chat"],
-                "blocking": True,
-                "mode": ExecutionMode.GATHER,
-            }
-        }
-        rule = defaults.get(node_type, defaults[NodeType.QUICK_CHAT])
-
-        # --- 兼容 agent_name（单数字符串）→ agent_names（列表） ---
-        agent_names = d.get("agent_names")
-        if agent_names is None:
-            agent_name = d.get("agent_name")
-            if isinstance(agent_name, str):
-                agent_names = [agent_name]
-            else:
-                agent_names = rule["agent_names"]
+        rule = NODE_TYPE_DEFAULTS.get(node_type, NODE_TYPE_DEFAULTS[NodeType.QUICK_CHAT])
 
         # 最终取值优先级：传入值 > 硬规则默认值
         return cls(
             node_type=node_type,
             name=d.get("name") or rule["name"],
-            agent_names=agent_names,
+            agents=d.get("agents") or rule.get("agents", ""),
             blocking=d.get("blocking") if "blocking" in d else rule["blocking"],
             mode=mode,
             post_condition=d.get("post_condition"),

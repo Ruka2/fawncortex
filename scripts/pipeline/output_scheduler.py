@@ -26,17 +26,14 @@ class Priority(Enum):
     NORMAL = 1      # 闲聊回复、表情
     HIGH = 2        # 大脑澄清/追答（插队）
 
-
 @dataclass
 class OutputTask:
     """输出任务。"""
     priority: Priority
     text: str
     emotion: str
-    source: str  # "chat" / "brain_clarify" / "brain_emit"
-    # 用于排序：同优先级下按入队时间排序
+    source: str
     seq: int = 0
-
 
 class OutputScheduler:
     """统一输出调度器。
@@ -71,17 +68,19 @@ class OutputScheduler:
         priority: Priority = Priority.NORMAL,
     ) -> None:
         """将消息加入播报队列。
+        犹豫体验性而言，虽然在任务编排下表情智能体和对话智能体是分别进行且在不同时间段获取到信息的，
+        schedule调度器仍然决定将对话内容和表情选项统一管理到一起发出是因为发送是因为只有响应那一刻做表情才是用户体验较好的
 
         Args:
             text: 要播报的文本。
             emotion: VTS 表情名称。
-            source: 消息来源标识。
-            priority: 优先级，大脑澄清用 HIGH。
+            source: 消息来源标识，哪一个智能体响应的。
+            priority: 优先级。
         """
         if not text or not text.strip():
             return
         self._seq_counter += 1
-        task = OutputTask(priority, text.strip(), emotion, source, self._seq_counter)
+        task = OutputTask(priority, text, emotion, source, self._seq_counter)
         # PriorityQueue 按元组第一个元素排序，负数实现高优先级在前
         await self._queue.put((-priority.value, self._seq_counter, task))
 
@@ -119,12 +118,12 @@ class OutputScheduler:
             async with self._speaking_lock:
                 # 触发表情
                 try:
-                    express_emotion(action=task.emotion, duration=3.0, intensity=1.0)
+                    express_emotion(action=task.emotion, duration=10.0, intensity=1.0)  # fixme: 此处需要debug排查问题
                 except Exception as e:
                     print(f"⚠️  表情触发失败: {e}")
 
                 # TTS 播报（包装为可取消的任务）
-                print(f"🔊 [{task.source}] {task.text}")
+                print(f"🔊✅ {task.source}: {task.text}")
                 self._current_tts_task = asyncio.create_task(
                     self._speak_async(task.text)
                 )

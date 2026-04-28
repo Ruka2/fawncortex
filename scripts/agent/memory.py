@@ -3,6 +3,7 @@
 ==================
 负责 Mem0LongTermMemory 的初始化配置与实例创建，
 将向量存储、嵌入模型、LLM 配置集中管理，供主程序和工具模块调用。
+本代码文件目前只有初始化数据库使用。
 """
 
 import sys
@@ -19,9 +20,7 @@ from agentscope.model import OpenAIChatModel
 from agentscope.embedding import OpenAITextEmbedding
 
 
-# =============================================================================
-# 全局：ChromaDB 向量存储配置 + mem0 主配置
-# =============================================================================
+# ChromaDB 向量存储配置 + mem0 主配置
 _VECTOR_STORE_CONFIG = VectorStoreConfig(
     provider="chroma",
     config={
@@ -35,12 +34,11 @@ _MEM0_CONFIG = MemoryConfig(
 )
 
 
-# =============================================================================
-# 工厂函数：创建长期记忆实例
-# =============================================================================
+
+# 创建长期记忆实例
 def create_long_term_memory(
-    agent_name: str = "default_agent",
-    user_name: str = "default_user",
+    agent_name: str,
+    user_name: str,
 ) -> Mem0LongTermMemory:
     """创建并返回 Mem0LongTermMemory 实例。
 

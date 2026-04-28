@@ -12,13 +12,12 @@
 import json
 
 import asyncio
-from typing import Optional
 
 from agentscope.agent import AgentBase
 from agentscope.message import Msg
 
-from .task_plan import TaskPlan, TaskNode, NodeType, ExecutionMode
-from .output_scheduler import OutputScheduler, Priority
+from .task_plan import TaskPlan, TaskNode, NodeType, ExecutionMode    # todo: ExecutionMode暂时没用到，待办
+from .output_scheduler import OutputScheduler
 from ..shared.shared_context import SharedContext
 
 
@@ -73,10 +72,15 @@ class TaskExecutor:
 
         # 等待所有非阻塞后台任务完成
         if self._current_tasks:
-            await asyncio.gather(*self._current_tasks, return_exceptions=True)
+            results = await asyncio.gather(*self._current_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    print(f"❌ 后台任务 #{i} 执行失败: {result}")
+                    import traceback
+                    traceback.print_exception(type(result), result, result.__traceback__)
             self._current_tasks.clear()
 
-        print("✅ 任务计划执行完毕")
+        # print("✅ 任务计划执行完毕")
 
     async def interrupt(self) -> None:
         """中断当前执行。
@@ -96,6 +100,7 @@ class TaskExecutor:
         await self.scheduler.interrupt()
         print("🔴 任务执行器：已中断")
 
+
     async def _execute_node(self, node: TaskNode, user_msg: Msg) -> None:
         """执行单个任务节点。"""
         print(f"▶️  执行节点: {node.name} ({node.node_type.value}, blocking={node.blocking})")
@@ -111,53 +116,43 @@ class TaskExecutor:
         else:
             print(f"⚠️  未知节点类型: {node.node_type}")
 
+
     # -------------------------------------------------------------------------
     # 节点执行实现
     # -------------------------------------------------------------------------
-
     async def _exec_quick_chat(self, node: TaskNode, user_msg: Msg) -> None:
         """快速闲聊节点：对话Agent。"""
-        chat_agent = self.agents.get("chat")
-        
-        # 如果没有启动闲聊Agent
-        if not chat_agent:
+        agent = self.agents.get(node.agents[0])  # fixme: 目前只能设定单智能体，后续补充多智能体序列
+        if not agent:
+            print(f"⚠️  节点 '{node.name}' 找不到 Agent '{node.agents}'")
             return
-    
-        reply = await chat_agent.reply(user_msg)
-        chat_text = reply.get_text_content()
-        
-        # 用于快速对话场景拼凑prompt # fixme: 需要优化提示词
-        ctx = self.shared_ctx.peek()
-        insight_parts = []
-        if ctx.get("retrieved_memories"):
-            insight_parts.append(f"检索到的相关记忆：{ctx['retrieved_memories']}")
-        if ctx.get("suggested_dialogue_strategy"):
-            insight_parts.append(f"对话策略建议：{ctx['suggested_dialogue_strategy']}")
-        if ctx.get("user_profile"):
-            insight_parts.append(f"用户画像：{ctx['user_profile']}")
-        if ctx.get("user_intent"):
-            insight_parts.append(f"用户意图：{ctx['user_intent']}")
 
-        if insight_parts and hasattr(chat_agent, "inject_context"):
-            context_text = "\n".join(insight_parts)
-            chat_agent.inject_context(context_text)
-        
-        
+        # 先注入 brain 洞察（如果 SharedContext 中有数据）
+        # 这样 quick_chat 回复时就能看到上一轮的深度分析结果
+        ctx = self.shared_ctx.peek()
+        if hasattr(agent, "inject_context"):
+            agent.inject_context(ctx)
+
+        reply = await agent.reply(user_msg)
+        chat_text = reply.get_text_content()
+
         # 记录本轮 quick_chat 的 assistant 输出，供 deep_think 判断是否需要预注入
         self._last_quick_chat_reply = chat_text
 
-        # 使用 brain 建议的表情，或回退到默认
-        emotion_text = self.shared_ctx.peek().get("suggested_emotion", "neutral")
-        await self.scheduler.schedule(chat_text, emotion_text, "chat")
+        # 使用 brain 建议的表情，或回退到默认（无）
+        emotion_text = ctx.get("suggested_emotion", "")
+        await self.scheduler.schedule(chat_text, emotion_text, node.agents)
 
     async def _exec_emotion_action(self, node: TaskNode, user_msg: Msg) -> None:
         """表情动作节点：调用 emotion_agent 输出表情。"""
-        emotion_agent = self.agents.get("emotion")
-        if not emotion_agent:
+        agent = self.agents.get(node.agents[0])  # fixme: 目前只能设定单智能体，后续补充多智能体序列
+        if not agent:
+            print(f"⚠️  节点 '{node.name}' 找不到 Agent '{node.agents}'")
             return
-        reply = await emotion_agent(user_msg)
+        reply = await agent(user_msg)
         emotion_text = reply.get_text_content()
-        await self.scheduler.schedule("", emotion_text, "emotion_action")
+        await self.scheduler.schedule("", emotion_text, node.agents)
+
 
     async def _exec_summary_chat(self, node: TaskNode, user_msg: Msg) -> None:
         """总结回复节点：基于大脑洞察后的正式回复。
@@ -165,70 +160,57 @@ class TaskExecutor:
         在 deep_think 之后执行，此时 SharedContext 已被更新。
         会将 brain 的洞察注入 chat_agent 的 prompt 中。
         """
-        chat_agent = self.agents.get("chat")
-        
-        # 如果没有启动闲聊agent
-        if not chat_agent:
+        agent = self.agents.get(node.agents[0])  # fixme: 目前只能设定单智能体，后续补充多智能体序列
+        if not agent:
+            print(f"⚠️  节点 '{node.name}' 找不到 Agent '{node.agents}'")
             return
 
         # 如果不需要再响应
         if self.shared_ctx.ignore_requested:
             return
 
-        # 组装 brain 洞察上下文
+        # 将 brain 洞察上下文注入对话智能体
         ctx = self.shared_ctx.peek()
-        insight_parts = []
-        if ctx.get("retrieved_memories"):
-            insight_parts.append(f"检索到的相关记忆：{ctx['retrieved_memories']}")
-        if ctx.get("suggested_dialogue_strategy"):
-            insight_parts.append(f"对话策略建议：{ctx['suggested_dialogue_strategy']}")
-        if ctx.get("user_profile"):
-            insight_parts.append(f"用户画像：{ctx['user_profile']}")
-        if ctx.get("user_emotion"):
-            insight_parts.append(f"用户情绪：{ctx['user_emotion']}")
-        if ctx.get("user_intent"):
-            insight_parts.append(f"用户意图：{ctx['user_intent']}")
-
-        if insight_parts and hasattr(chat_agent, "inject_context"):
-            context_text = "\n".join(insight_parts)
-            chat_agent.inject_context(context_text)
+        if hasattr(agent, "inject_context"):   # 如果是chat_agent的话才可以注入，因为只有他有inject_context函数
+            agent.inject_context(ctx)
             
         # ── Debug: 打印 quick_chat 调用前的 SharedContextData ──
-        print(f"\n{'='*60}")
-        print(f"[SharedContext DEBUG] summary_chat 调用大模型前")
-        print(f"{'='*60}")
-        for k, v in ctx.items():
-            v_str = str(v)
-            display = v_str[:300] + ("..." if len(v_str) > 300 else "")
-            print(f"  {k}: {display}")
-        print(f"{'='*60}\n")
+        # print(f"\n{'='*60}")
+        # print(f"[SharedContext DEBUG] summary_chat 调用大模型前")
+        # print(f"{'='*60}")
+        # for k, v in ctx.items():
+        #     v_str = str(v)
+        #     display = v_str[:300] + ("..." if len(v_str) > 300 else "")
+        #     print(f"  {k}: {display}")
+        # print(f"{'='*60}\n")
 
         # ── Debug: 打印 quick_chat 调用前的 SharedContextData ──
-        print(f"\n{'='*60}")
-        print(f"[SharedContext DEBUG] summary_chat 调用大模型前")
-        print(f"{'='*60}")
-        for k, v in ctx.items():
-            v_str = str(v)
-            display = v_str[:300] + ("..." if len(v_str) > 300 else "")
-            print(f"  {k}: {display}")
-        print(f"{'='*60}\n")
+        # print(f"\n{'='*60}")
+        # print(f"[SharedContext DEBUG] summary_chat 调用大模型前")
+        # print(f"{'='*60}")
+        # for k, v in ctx.items():
+        #     v_str = str(v)
+        #     display = v_str[:300] + ("..." if len(v_str) > 300 else "")
+        #     print(f"  {k}: {display}")
+        # print(f"{'='*60}\n")
 
-        reply = await chat_agent.reply(user_msg)
+        reply = await agent.reply(user_msg)
         chat_text = reply.get_text_content()
-        
+
         # 已完成brain_agent的summary节点，清空大脑智能体需要使用的上下文
         self._last_quick_chat_reply = ""
 
         # 使用 brain 建议的表情，或回退到默认
-        emotion_text = ctx.get("suggested_emotion", "neutral")
-        await self.scheduler.schedule(chat_text, emotion_text, "summary_chat")
+        emotion_text = ctx.get("suggested_emotion", "")
+        await self.scheduler.schedule(chat_text, emotion_text, node.agents)
         
         
 
     async def _exec_deep_think(self, node: TaskNode, user_msg: Msg) -> None:
         """大脑深度思考节点（阻塞）。"""
-        brain_agent = self.agents.get("brain")
-        if not brain_agent:
+        agent = self.agents.get(node.agents[0])  # fixme: 目前只能设定单智能体，后续补充多智能体序列
+        if not agent:
+            print(f"⚠️  节点 '{node.name}' 找不到 Agent '{node.agents}'")
             return
 
         # 只有当 quick_chat 已经先响应完成，才把其 assistant 回复预注入 brain
@@ -236,7 +218,7 @@ class TaskExecutor:
         assistant_text = self._last_quick_chat_reply
 
         # 使用 think_with_context：内部按 user → assistant 顺序预填充短期记忆，然后执行 ReAct
-        result_dict = await brain_agent.think_with_context(user_msg, assistant_text)
+        result_dict = await agent.think_with_context(user_msg, assistant_text)
 
         # 转回 JSON 字符串供 _parse_brain_output 解析
         insight_text = json.dumps(result_dict, ensure_ascii=False, indent=2)
@@ -244,10 +226,12 @@ class TaskExecutor:
         # 解析大脑输出（JSON格式）
         await self._parse_brain_output(insight_text)
 
-    # -------------------------------------------------------------------------
-    # 大脑输出解析
-    # -------------------------------------------------------------------------
 
+
+    # -------------------------------------------------------------------------
+    # 工具类
+    
+    # 大脑输出解析
     async def _parse_brain_output(self, text: str) -> None:
         """解析大脑Agent的输出 JSON，更新 SharedContext。
 

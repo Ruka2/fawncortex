@@ -2,7 +2,7 @@
 长期记忆工具集（纯工具函数）
 ============================
 通过模块级注入模式接收 Mem0LongTermMemory 实例，
-与 scripts.agent.memory 解耦，只保留可被 Toolkit 注册的工具函数。
+与 scripts.agent.memory 解耦，本文件代码只保留可被 Toolkit 注册的工具函数，代表这个记忆检索和记忆存储只是一个工具，不是内置在智能体的东西
 
 使用方式：
     from scripts.tools.search_memory import (
@@ -24,7 +24,7 @@ from agentscope.message import TextBlock
 # 模块级记忆管理器引用，由主程序通过 set_memory_manager() 注入
 _memory_manager: Optional[Any] = None
 
-# 模块级缓存：记录 ReActAgent 最近一次检索到的记忆文本列表
+# 模块级缓存：记录 ReActAgent 最近一次检索到的记忆文本列表（# todo: 脏实现，后续可能需要优化）
 _last_retrieved_memories: list[str] = []
 
 

@@ -2,12 +2,7 @@
 公共信息域（SharedContext）
 ===========================
 多智能体/多异步任务共享的认知资产与任务状态管理中心。
-
-特性：
-- asyncio.Lock 保证并发安全
-- 版本号机制避免使用过期洞察
-- 支持任务队列重排（replan）信号
-- 支持大脑建议表情
+通俗简介就是用于大脑智能体与闲聊智能体异步通信时的信息域共享
 """
 
 import asyncio
@@ -32,19 +27,6 @@ class SharedContextData:
     suggested_emotion: str = ""            # 建议的表情
     # --- 长期记忆 ---
     retrieved_memories: list[str] = field(default_factory=list)  # 大脑检索到的相关长期记忆列表
-    
-    
-    # user_profile: str = ""
-    # retrieved_memories: str = ""
-    # strategy_hint: str = ""
-    # user_emotion: str = ""
-    # confidence: float = 0.0
-    # --- 任务编排扩展字段 ---
-    # replan_requested: bool = False
-    # new_plan: Optional[list[dict]] = None
-    # suggested_emotion: str = ""  # 大脑建议的表情
-    # brain_clarification: str = ""  # 大脑澄清文本
-
 
 class SharedContext:
     """大脑Agent生产的洞察 + 任务编排信号，供前台Agent消费。"""
@@ -74,6 +56,8 @@ class SharedContext:
         """清空公共域数据（新一轮开始时调用）。"""
         async with self._lock:
             self._data = SharedContextData()
+
+
 
     # --- 便捷属性访问 ---
     @property
