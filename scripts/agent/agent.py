@@ -56,9 +56,30 @@ class SimpleAgent(AgentBase):
             ]
         )
 
+        # ── Debug: 打印发送给 LLM 的完整 Messages ──
+        print(f"\n{'='*60}")
+        print(f"[LLM INPUT] Agent: {self.name}")
+        print(f"{'='*60}")
+        for i, m in enumerate(prompt):
+            role = m.get("role", "unknown") if isinstance(m, dict) else getattr(m, "role", "unknown")
+            content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
+            # 截断过长内容，避免刷屏
+            content_str = str(content)
+            display = content_str[:400] + ("..." if len(content_str) > 400 else "")
+            print(f"  [{i}] {role}: {display}")
+        print(f"{'='*60}")
+
         # 调用模型：兼容 stream=True（异步生成器）和 stream=False（直接对象）
         response = await self.model(prompt)
         content = await self._extract_content(response)
+
+        # ── Debug: 打印 LLM 返回的原始响应 ──
+        print(f"\n{'='*60}")
+        print(f"[LLM OUTPUT] Agent: {self.name}")
+        content_str = str(content)
+        display = content_str[:500] + ("..." if len(content_str) > 500 else "")
+        print(f"  {display}")
+        print(f"{'='*60}\n")
 
         reply_msg = Msg(
             name=self.name,

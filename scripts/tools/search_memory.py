@@ -24,6 +24,20 @@ from agentscope.message import TextBlock
 # 模块级记忆管理器引用，由主程序通过 set_memory_manager() 注入
 _memory_manager: Optional[Any] = None
 
+# 模块级缓存：记录 ReActAgent 最近一次检索到的记忆文本列表
+_last_retrieved_memories: list[str] = []
+
+
+def clear_last_retrieved_memories() -> None:
+    """清空检索记忆缓存（每轮 BrainAgent 思考前调用）。"""
+    global _last_retrieved_memories
+    _last_retrieved_memories.clear()
+
+
+def get_last_retrieved_memories() -> list[str]:
+    """获取最近一次检索到的记忆文本列表（副本）。"""
+    return _last_retrieved_memories.copy()
+
 
 def set_memory_manager(manager: Any) -> None:
     """注入已初始化的 Mem0LongTermMemory 实例。
@@ -66,6 +80,10 @@ async def retrieve_from_memory(keywords: list[str], limit: int = 5) -> ToolRespo
                 mem_text = item.get("memory", "")
                 if mem_text and mem_text not in results:
                     results.append(mem_text)
+                    # 同步写入模块级缓存，供 BrainAgent 外部获取
+                    global _last_retrieved_memories
+                    if mem_text not in _last_retrieved_memories:
+                        _last_retrieved_memories.append(mem_text)
         text = json.dumps(results, ensure_ascii=False, indent=2)
     except Exception as e:
         text = f"记忆检索失败: {e}"
