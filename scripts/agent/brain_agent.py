@@ -32,6 +32,9 @@ from scripts.tools.search_memory import (
 )
 
 
+
+# todo: 封装大脑智能体输出的数据结构，以此来更标准化
+
 class BrainAgent:
     """大脑智能体封装。
 

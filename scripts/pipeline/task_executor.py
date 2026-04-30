@@ -107,12 +107,12 @@ class TaskExecutor:
             await asyncio.gather(*self._current_tasks, return_exceptions=True)
         self._current_tasks.clear()
         await self.scheduler.interrupt()
-        print("🔴 任务执行器：已中断")
+        print("任务执行器：已中断")
 
 
     async def _execute_node(self, node: TaskNode, user_msg: Msg) -> None:
         """执行单个任务节点。"""
-        print(f"▶️ 执行节点: {node.name} ({node.node_type.value}, blocking={node.blocking})")
+        print(f"▶️  执行节点: {node.name} ({node.node_type.value}, blocking={node.blocking})")
 
         start_ts = time.perf_counter()
 

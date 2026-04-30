@@ -60,7 +60,7 @@ class RoundLatencyReport:
         # 3. 用户角度
         print("[用户角度]")
         print(f"  输入 → 首次听到语音: {self.user_perceived_s:10.3f} s")
-        print(f"{'='*60}\n")
+        print(f"{'='*60}")
 
 
 class LatencyTracker:

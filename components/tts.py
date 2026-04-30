@@ -3,17 +3,13 @@ SiliconFlow CosyVoice2-0.5B 流式 TTS 客户端
 API: https://api.siliconflow.cn/v1/audio/speech
 """
 
-import os
 import io
 import time
 from typing import Optional
 
-
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from config import OPENAI_API_KEY
 
 import requests
 
@@ -30,18 +26,24 @@ except ImportError:
 class SiliconFlowCosyVoice:
     """SiliconFlow CosyVoice2-0.5B 流式 TTS 客户端"""
 
-    API_URL = "https://api.siliconflow.cn/v1/audio/speech"
-    MODEL = "FunAudioLLM/CosyVoice2-0.5B"
-
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or OPENAI_API_KEY
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_url: str = "https://api.siliconflow.cn/v1/audio/speech",
+        model: str = "FunAudioLLM/CosyVoice2-0.5B",
+        voice: str = "FunAudioLLM/CosyVoice2-0.5B:diana",
+    ):
+        self.api_key = api_key
         if not self.api_key:
-            raise ValueError("请设置 SILICONFLOW_API_KEY 环境变量")
+            raise ValueError("请提供 api_key 参数")
+        self.api_url = api_url
+        self.model = model
+        self.voice = voice
 
     def stream_synthesize(
         self,
         text: str,
-        voice: str = "FunAudioLLM/CosyVoice2-0.5B:diana",
+        voice: Optional[str] = None,
         speed: float = 1.0,
         gain: float = 0.0,
         response_format: str = "mp3",
@@ -71,10 +73,12 @@ class SiliconFlowCosyVoice:
             "Content-Type": "application/json",
         }
 
+        use_voice = voice if voice is not None else self.voice
         payload = {
-            "model": self.MODEL,
-            "input": text,
-            "voice": voice,
+            "model": self.model,
+            # "input": text,
+            "input": f"使用小男孩的声音<|endofprompt|>{text}",
+            "voice": use_voice,
             "speed": speed,
             "gain": gain,
             "response_format": response_format,
@@ -89,11 +93,11 @@ class SiliconFlowCosyVoice:
 
         # ========== 核心：流式请求 ==========
         response = requests.post(
-            self.API_URL,
+            self.api_url,
             headers=headers,
             json=payload,
             stream=True,  # 启用流式接收
-            timeout=60,
+            timeout=20,
         )
         response.raise_for_status()
 
@@ -141,22 +145,21 @@ class SiliconFlowCosyVoice:
 
 
 # ==================== 使用示例 ====================
+if __name__ == "__main__":
+    import config
 
-# if __name__ == "__main__":
-#     # 方式1: 环境变量
-#     # export SILICONFLOW_API_KEY="sk-xxxxxxxx"
-
-#     # 方式2: 直接传入
-#     # tts = SiliconFlowCosyVoice(api_key="sk-xxx")
-#     tts = SiliconFlowCosyVoice()
-
-#     # 流式合成 + 保存 + 播放
-#     tts.stream_synthesize(
-#         text="你好，我是你的虚拟主播，正在测试流式语音合成效果！",
-#         voice="FunAudioLLM/CosyVoice2-0.5B:diana",  # 开朗女声
-#         speed=1.0,
-#         gain=0.0,
-#         response_format="mp3",
-#         save_path="output.mp3",
-#         play=True,
-#     )
+    # 流式合成 + 播放 + 保存
+    tts = SiliconFlowCosyVoice(
+        api_key=config.TTS_API_KEY,
+        api_url=config.TTS_BASE_URL,
+        model=config.TTS_MODEL_NAME,
+        voice=config.TTS_VOICE,
+    )
+    tts.stream_synthesize(
+        text="你好，我正在测试流式语音合成效果，一二三四五六七八，testing testing",
+        speed=1.2,
+        gain=0.0,
+        response_format="mp3",
+        save_path="output.mp3",
+        play=True,
+    )

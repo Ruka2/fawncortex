@@ -110,7 +110,7 @@ class OutputScheduler:
             except asyncio.QueueEmpty:
                 break
 
-        print("🔇 输出调度器：已打断并清空队列")
+        print("输出调度器：已打断并清空队列")
 
     async def run(self) -> None:
         """持续消费队列，按优先级播报。"""
@@ -151,7 +151,6 @@ class OutputScheduler:
                 None,
                 lambda: self.tts.stream_synthesize(
                     text=text.strip(),
-                    voice="FunAudioLLM/CosyVoice2-0.5B:diana",
                     speed=1.0,
                     gain=0.0,
                     response_format="mp3",

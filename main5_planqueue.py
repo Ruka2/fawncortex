@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config
 
 # 核心基础依赖
-import json
 import asyncio
 import time
 
@@ -53,30 +52,49 @@ async def main() -> None:
     # 初始化延迟追踪器（可选依赖，传 None 则关闭计时）
     latency_tracker = LatencyTracker()
 
-    # 初始化TTS与输出调度器
-    tts = SiliconFlowCosyVoice()
+    # 初始化TTS
+    tts = SiliconFlowCosyVoice(
+        api_key=config.TTS_API_KEY,
+        api_url=config.TTS_BASE_URL,
+        model=config.TTS_MODEL_NAME,
+        voice=config.TTS_VOICE,
+    )
+    print(f"[init] TTS已创建: {config.TTS_MODEL_NAME}, {config.TTS_VOICE}")
+    
+    # 初始化输出调度器
     scheduler = OutputScheduler(tts, latency_tracker=latency_tracker)
     asyncio.create_task(scheduler.run())
-    print("[init] 输出调度器已启动")
+    print("[init] 输出调度器已启动")   # 包含tts和time_tracker
 
     # 初始化长期记忆
-    long_term_memory = create_long_term_memory(agent_name=AGENT_NAME, user_name=USER_NAME)
+    long_term_memory = create_long_term_memory(
+        agent_name=AGENT_NAME,
+        user_name=USER_NAME,
+        vector_store_path=config.MEM0_VECTOR_STORE_PATH,
+        history_db_path=config.MEM0_HISTORY_DB_PATH,
+        llm_model_name=config.LLM_MODEL_NAME,
+        llm_api_key=config.LLM_API_KEY,
+        llm_base_url=config.LLM_BASE_URL,
+        embedding_model_name=config.EMBEDDING_MODEL_NAME,
+        embedding_api_key=config.EMBEDDING_API_KEY,
+        embedding_base_url=config.EMBEDDING_BASE_URL,
+    )
     set_memory_manager(long_term_memory)
-    print(f"[init] 长期记忆已初始化 （history_db: {config.MEM0_HISTORY_DB_PATH}）")
+    print(f"[init] 长期记忆已初始化: {config.MEM0_HISTORY_DB_PATH}")
 
     # 初始化公共信息域
     shared_ctx = SharedContext()
-    print(f"[init] 共享上下文信息域已创建")
+    print(f"[init] 共享上下文信息域已创建: {shared_ctx}")
 
     # 初始化大模型
     model = OpenAIChatModel(
-        model_name=config.MODEL_NAME,
-        api_key=config.OPENAI_API_KEY,
+        model_name=config.LLM_MODEL_NAME,
+        api_key=config.LLM_API_KEY,
         stream=config.STREAM,
-        client_kwargs={"base_url": config.OPENAI_BASE_URL},
+        client_kwargs={"base_url": config.LLM_BASE_URL},
         generate_kwargs={"extra_body": {"enable_thinking": False}},  # fixme: 追求时延，默认模型关闭think模式
     )
-    print(f"[init] 大模型已初始化 ({config.MODEL_NAME})")
+    print(f"[init] 大模型已初始化: {config.LLM_MODEL_NAME}")
 
     # 初始化各个智能体（共4个：对话、表情、大脑、任务编排）
     chat_agent = ChatAgent(model=model, agent_name=AGENT_NAME)
@@ -88,13 +106,11 @@ async def main() -> None:
         "chat": chat_agent,
         "emotion": emotion_agent,
         "brain": brain_agent,
-        # "orchestrator": orchestrator,
     }
-    print(f"[init] 智能体已创建（{list(agents.keys())}）")
 
     # 初始化任务执行器
     executor = TaskExecutor(agents, scheduler, shared_ctx, latency_tracker=latency_tracker)
-    print("[init] 任务执行器已创建")
+    print(f"[init] 任务执行器已创建: {list(agents.keys())}")
     
     
     
@@ -106,7 +122,7 @@ async def main() -> None:
     try:
         while True:
             user_input = (
-                await asyncio.get_event_loop().run_in_executor(None, input, "👤 你: ")
+                await asyncio.get_event_loop().run_in_executor(None, input, "")  # fixme: ""👤 你: "" 本来是这个调用的第三个输出， 因为有流式输出，会影响终端日志打印所以先去除
             ).strip()
 
             if not user_input:
@@ -122,7 +138,7 @@ async def main() -> None:
             # ── 打断上一轮，当用户新输入到达时，并对部分执行调度器做打断 ──
             await executor.interrupt()
             # await shared_ctx.clear()
-            await scheduler.interrupt()
+            # await scheduler.interrupt()
 
             # 重置核心chat_agent的prompt（上轮的重置）
             chat_agent.reset_prompt()
@@ -133,11 +149,10 @@ async def main() -> None:
             orch_end = time.perf_counter()
             latency_tracker.record_agent(
                 agent_name="orchestrator",
-                node_type="plan",
+                node_type="orchestrator",
                 start_ts=orch_start,
                 end_ts=orch_end,
             )
-            # print(f"编排智能体输出任务队列: {json.dumps(plan_dict, ensure_ascii=False)}")
 
             # 装载编排智能体的输出结果
             # Orchestrator 返回格式: {"node_list": ["quick_chat", "deep_think", ...]}

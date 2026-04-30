@@ -17,6 +17,7 @@ from datetime import datetime
 # 项目配置：日志目录
 import config
 
+PREFIX_FILE_NAME = "run_"
 
 class TeeLogger:
     """Tee 式日志收集器：同时输出到终端和文件。
@@ -37,13 +38,13 @@ class TeeLogger:
         # 自动生成文件名：run_YYYYMMDD_HHMMSS.log
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"run_{timestamp}.log"
+            filename = f"{PREFIX_FILE_NAME}{timestamp}.log"
 
         self.log_path = os.path.join(log_dir, filename)
         self.log_file = open(self.log_path, "w", encoding="utf-8")
 
         # 用原始终端打印初始化信息（避免递归进入 self.write）
-        self.terminal.write(f"[Logger] 终端日志已收集到文件: {self.log_path}\n")
+        self.terminal.write(f"[init] 终端日志已收集到文件: {self.log_path}\n")
         self.terminal.flush()
 
     # -------------------------------------------------------------------------
