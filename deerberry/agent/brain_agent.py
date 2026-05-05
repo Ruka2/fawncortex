@@ -14,6 +14,7 @@
 """
 
 import json
+from datetime import datetime
 from typing import Optional
 
 from agentscope.model import OpenAIChatModel
@@ -23,15 +24,13 @@ from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
 from agentscope.message import Msg
 
-from scripts.tools.search_memory import (
+from deerberry.tools.search_memory import (
     set_memory_manager,
     retrieve_from_memory,
     record_to_memory,
-    clear_last_retrieved_memories,
-    get_last_retrieved_memories,
+    clear_last_retrieved_memories,  # 用于维护ShareContext的数据，非Brain tookit使用
+    get_last_retrieved_memories,    # 用于维护chat_agent的数据，非Brain tookit使用
 )
-
-
 
 # todo: 封装大脑智能体输出的数据结构，以此来更标准化
 
@@ -39,49 +38,51 @@ class BrainAgent:
     """大脑智能体封装。
 
     基于 ReActAgent，增加了任务反思和 JSON 输出能力。
+    支持通过外部传入 toolkit 来混入 MCP 工具。
     """
 
-    DEFAULT_SYS_PROMPT = (
-        "你是一个智能体集群的大脑中枢，负责对用户的输入进行深度思考、任务解决、工具调用等功能，最终为整个智能体集群输出此次与用户对话的策略和关键信息追踪。\n"
-        "在这一次任务中，你需要根据用户的输入和历史对话中，分析用户的性格、情绪、意图等，输出对这个智能体集群的策略建议，"
-        "同时你需要为智能体已经说给用户的话是否合适进行事实核对、反思，如果发现智能体说给用户的话存在事实错误或遗漏、歧义等问题，你需要输出一个策略来进行追问澄清，帮助其它智能体更好的回答。"
-        "若如果对话内容的问题涉及简单、常识问题时，智能体集群个体就已经足够完成此类内容，因此遇到简单问题时可考虑忽略复杂的步骤，只输出简单的对话策略。"
-        "\n"
-        "## 你可以使用的工具集合：\n"
-        "retrieve_from_memory: 检索与用户输入相关的历史记忆\n"
-        "record_to_memory: 将有意义有价值的对话内容记录到长期记忆中\n"
-        "\n"
-        "## 策略标签解释\n"
-        "clarification_needed: 发现其它智能体存在严重混淆对话、信息遗漏、错误执行、向用户澄清歧义、纠正错误时，需要向其他智能体反馈进行干预，请求智能体再次响应来解决用户问题，true为需要干预，false即不需要干预，枚举布尔值[true, false]\n"
-        "clarification_reason: 需要澄清的内容策略，用于告知其他智能体策略内容，本变量为字符串类型\n"
-        # "clarification_option: 根据本次澄清原因和内容，给定本次澄清的选项建议，ignore为智能体集群对话无任何异常，clarify为需要干预澄清，replan为智能体集群本次对话的过度设想、冗余思考，应该减少任务和精准缩短对话策略，枚举字符串[\"ignore\", \"clarify\", \"replan\"]\n"
-        "clarification_option: 根据本次澄清原因和内容，给定本次澄清的选项建议。ignore为智能体集群对话无任何异常、或是最近智能体一轮回答已经足以回答用户问题了，所以无须再重复赘述一遍；clarify为智能体最近一轮回答在出现错误或者反事实，则需要干预智能体集群再一次澄清。枚举字符串[\"ignore\", \"clarify\"]\n"
-        "user_profile: 用户性格、画像，本变量为字符串类型\n"
-        "user_emotion: 用户现在的情绪，本变量为字符串类型\n"
-        "user_intent: 用户现在的对话意图，本变量为字符串类型\n"
-        "suggested_emotion: 建议其它智能体做出的行为动作、表情，枚举字符串[\"smile\", \"happy\", \"laugh\", \"sad\", \"cry\", \"angry\", \"surprise\", \"shy\", \"sleepy\", \"disgust\", \"neutral\", \"blink\", \"wink\", \"nod\", \"tilt\", \"talk\"]\n"
-        "suggested_dialogue_strategy: 建议其它负责对话的智能体本次进行对话的策略建议方向，即对话策略控制，请只输出你推荐对话的策略建议，而非对话内容，本变量为字符串类型\n"
-        "\n"
-        "## 输出格式（严格 JSON，不要输出其他内容）\n"
-        "```json\n"
-        "{\n"
-        '  "clarification": {'
-        '    "clarification_reason": "...",\n'
-        '    "clarification_needed": false,\n'
-        '    "clarification_option": "ignore"\n'
-        '  },\n'
-        '  "user_info": {'
-        '    "user_profile": "...",\n'
-        '    "user_emotion": "...",\n'
-        '    "user_intent": "..."\n'
-        '  },\n'
-        '  "suggested": {'
-        '    "suggested_dialogue_strategy": "...",\n'
-        '    "suggested_emotion": "neutral"\n'
-        '  },\n'
-        "}\n"
-        "```\n"
-    )
+    DEFAULT_SYS_PROMPT = \
+"""你是一个智能体集群的大脑中枢，负责对用户的输入进行深度思考、任务解决、工具调用等功能，最终为整个智能体集群输出此次与用户对话的策略和关键信息追踪。
+
+### 任务简介
+在这一次任务中，你需要根据用户的输入和历史对话中，分析用户的性格、情绪、意图等，输出对这个智能体集群的策略建议，同时你需要为智能体已经说给用户的话是否合适进行事实核对、反思。
+如果发现智能体说给用户的话存在事实错误或遗漏、歧义等问题，你需要输出一个策略来进行追问澄清，帮助其它智能体更好的回答。
+若如果对话内容的问题涉及简单（例如常识、闲聊问题）时，可以认定智能体集群个体足以完成此类内容，因此遇到简单问题时可考虑忽略复杂的步骤，只输出简单的对话策略。
+
+### 现实世界信息
+<时间标记/>
+
+### 策略标签解释
+clarification_needed: 发现对话内容中存在严重问题（混淆对话、信息遗漏、错误执行、反事实、误解用户意图）时，需要向其他智能体反馈进行干预，请求智能体集群再次响应来解决本次对话问题，true 为需要澄清，false 即不需要干预，枚举布尔值 [true, false]
+clarification_reason: 需要通知其它智能体需要澄清的原因（对话中错了什么、出现了什么验证问题），用于告知其他智能体原因缘由，本变量为字符串类型
+clarification_option: 根据本次澄清原因和内容，给定本次澄清的选项建议。ignore 为智能体集群对话无任何异常、或是最近智能体一轮回答足以正确解决用户对话问题，所以无须再重复赘述一遍；clarify为智能体最近一轮回答在出现严重问题，则需要干预智能体集群再一次澄清。枚举字符串 ["ignore", "clarify"]
+user_profile: 用户性格和画像，本变量为字符串类型
+user_emotion: 用户现在的情绪预测，本变量为字符串类型
+user_intent: 用户现在的对话意图，本变量为字符串类型
+suggested_emotion: 建议其它智能体做出的行为动作或表情，枚举字符串["smile", "happy", "laugh", "sad", "cry", "angry", "surprise", "shy", "sleepy", "disgust", "neutral", "blink", "wink", "nod", "tilt", "talk"]
+suggested_dialogue_strategy: 建议智能体集群本次或下次进行对话时的策略建议方向，方向只包含对话策略建议，而非包含实际对话内容文本，本变量为字符串类型
+
+## 输出格式
+仅输出严格一个可由python代码读取的 JSON 数据：
+```
+{
+  "clarification": {
+    "clarification_reason": ...,
+    "clarification_needed": ...,
+    "clarification_option": ...
+  },
+  "user_info": {
+    "user_profile": ...,
+    "user_emotion": ...,
+    "user_intent": ...
+  },
+  "suggested": {
+    "suggested_dialogue_strategy": ...,
+    "suggested_emotion": ...
+  }
+}
+```
+"""
 
     def __init__(
         self,
@@ -89,16 +90,26 @@ class BrainAgent:
         model: Optional[OpenAIChatModel] = None,
         long_term_memory=None,
         formatter: Optional[OpenAIChatFormatter] = None,
+        toolkit: Optional[Toolkit] = None,
     ):
         if model is None:
             raise ValueError("BrainAgent 需要传入 model 参数")
 
-        # 创建工具集
-        toolkit = Toolkit()
+        # 复用外部传入的 toolkit，或新建
+        if toolkit is None:
+            toolkit = Toolkit()
+
         if long_term_memory is not None:
             set_memory_manager(long_term_memory)
-            toolkit.register_tool_function(retrieve_from_memory)
-            toolkit.register_tool_function(record_to_memory)
+            # 避免重复注册记忆工具（兼容外部已传入 toolkit 的场景）
+            existing = {
+                s.get("function", {}).get("name", "")
+                for s in toolkit.get_json_schemas()
+            }
+            if "retrieve_from_memory" not in existing:
+                toolkit.register_tool_function(retrieve_from_memory)
+            if "record_to_memory" not in existing:
+                toolkit.register_tool_function(record_to_memory)
 
         self.agent = ReActAgent(
             name=name,
@@ -108,6 +119,8 @@ class BrainAgent:
             formatter=formatter or OpenAIChatFormatter(),
             toolkit=toolkit,
         )
+        # 保存基础 prompt，用于动态刷新时间信息
+        self._base_sys_prompt = self.DEFAULT_SYS_PROMPT
 
     # fixme: 目前brain_agent的think和reply都有上下文不能及时同步的问题，这两个函数暂时不使用
     async def reply(self, user_msg) -> Msg:
@@ -117,6 +130,19 @@ class BrainAgent:
         return Msg(name=self.agent.name, content=text, role="assistant")
 
     # fixme: 目前brain_agent的think和reply都有上下文不能及时同步的问题，这两个函数暂时不使用
+    def _refresh_sys_prompt(self) -> None:
+        """将当前时间注入到 system prompt 的 <时间标记/> 占位符中。
+
+        参考 ChatAgent.inject_context 模式：基于基础 prompt 做占位符替换，
+        每次调用 think / think_with_context 前执行，确保 LLM 知道当前时间。
+
+        注意：ReActAgent.sys_prompt 是只读 property，必须通过 _sys_prompt 修改。
+        """
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.agent._sys_prompt = self._base_sys_prompt.replace(
+            "<时间标记/>", now
+        )
+
     async def think(self, user_msg) -> dict:
         """执行深度思考，返回结构化 JSON。
 
@@ -131,7 +157,8 @@ class BrainAgent:
         if isinstance(user_msg, str):
             user_msg = Msg(name="user", content=user_msg, role="user")
 
-        # 每轮思考前清空记忆检索缓存
+        # 每轮思考前：刷新时间 + 清空记忆检索缓存
+        self._refresh_sys_prompt()
         clear_last_retrieved_memories()
 
         result = await self.agent.reply(user_msg)
@@ -166,7 +193,7 @@ class BrainAgent:
                         "user_intent": "",
                     },
                     "suggested": {
-                        "suggested_dialogue_strategy": text[:500],
+                        "suggested_dialogue_strategy": "",
                         "suggested_emotion": "",
                     },
                 }
@@ -202,7 +229,36 @@ class BrainAgent:
             )
             await self.agent.memory.add(assistant_msg)
 
+        # ── Debug: 打印 BrainAgent 完整上下文排查信息 ──
+        print(f"\n{'='*60}")
+        print("[BrainAgent Context DEBUG] 排查 chat_agent 提前响应是否已注入")
+        print(f"  assistant_text (来自提前响应的chat_agent): {repr(assistant_text)}")
+        print(f"  assistant_text 是否为空: {not assistant_text}")
+        mem_list = await self.agent.memory.get_memory()
+        print(f"  Memory 消息总数: {len(mem_list)}")
+        print(f"{'-'*60}")
+        for i, m in enumerate(mem_list):
+            role = getattr(m, "role", "unknown")
+            name = getattr(m, "name", "unknown")
+            content = getattr(m, "content", "")
+            # content 可能是 list[Block] 或 str
+            if isinstance(content, list):
+                content_str = ""
+                for block in content:
+                    if isinstance(block, dict):
+                        content_str += block.get("text", str(block))
+                    else:
+                        content_str += str(block)
+            else:
+                content_str = str(content)
+            # 截断过长内容，避免日志爆炸
+            display = content_str[:500] + ("..." if len(content_str) > 500 else "")
+            print(f"  [{i}] role={role:12s} name={name:15s}")
+            print(f"       content={display}")
+        print(f"{'='*60}\n")
+
         # 执行 ReAct 循环（传入 None，避免 reply() 重复添加 user_msg）
+        self._refresh_sys_prompt()
         clear_last_retrieved_memories()
 
         # ── Debug: 打印 BrainAgent 输入 ──
@@ -242,7 +298,7 @@ class BrainAgent:
                         "user_intent": "",
                     },
                     "suggested": {
-                        "suggested_dialogue_strategy": text[:500],
+                        "suggested_dialogue_strategy": "",
                         "suggested_emotion": "",
                     },
                 }

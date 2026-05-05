@@ -5,7 +5,7 @@
 与 scripts.agent.memory 解耦，本文件代码只保留可被 Toolkit 注册的工具函数，代表这个记忆检索和记忆存储只是一个工具，不是内置在智能体的东西
 
 使用方式：
-    from scripts.tools.search_memory import (
+    from deerberry.tools.search_memory import (
         set_memory_manager,
         retrieve_from_memory,
         record_to_memory,

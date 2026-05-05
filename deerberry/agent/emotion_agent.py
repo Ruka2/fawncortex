@@ -15,7 +15,7 @@ from agentscope.memory import MemoryBase, InMemoryMemory
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg
 
-from .agent import SimpleAgent
+from deerberry.base.simple_agent import SimpleAgent
 
 
 DEFAULT_EMOTION_PROMPT = (

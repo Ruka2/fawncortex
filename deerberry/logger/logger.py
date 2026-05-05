@@ -5,7 +5,7 @@
 无需修改代码中任何现有的 print 语句。
 
 使用方式：
-    from scripts.pipeline.logger import enable_file_logging
+    from deerberry.pipeline.logger import enable_file_logging
     enable_file_logging()   # 从此处开始，所有 print 都会同时写入文件
 """
 
@@ -27,8 +27,9 @@ class TeeLogger:
     """
 
     def __init__(self, log_dir: str | None = None, filename: str | None = None) -> None:
-        # 保留原始终端 stdout，用于自身初始化信息和后续恢复
+        # 保留原始终端 stdout / stderr，用于自身初始化信息和后续恢复
         self.terminal = sys.stdout
+        self.terminal_stderr = sys.stderr
 
         # 使用配置文件中的路径，未传参时取默认值
         if log_dir is None:
@@ -67,14 +68,16 @@ class TeeLogger:
             self.log_file.flush()
 
     def close(self) -> None:
-        """关闭日志文件并恢复原始 stdout。
+        """关闭日志文件并恢复原始 stdout / stderr。
 
-        必须先恢复 sys.stdout，再关文件，否则解释器关闭期间的
+        必须先恢复 sys.stdout/sys.stderr，再关文件，否则解释器关闭期间的
         内部打印会走到已关闭的文件上。
         """
-        # 1. 恢复原始 stdout，防止后续 flush/write 再走 TeeLogger
+        # 1. 恢复原始 stdout / stderr，防止后续 flush/write 再走 TeeLogger
         if sys.stdout is self:
             sys.stdout = self.terminal
+        if sys.stderr is self:
+            sys.stderr = self.terminal_stderr
 
         # 2. 关闭日志文件
         if self.log_file and not self.log_file.closed:
@@ -84,9 +87,11 @@ class TeeLogger:
             self.terminal.flush()
 
     def __del__(self) -> None:
-        """析构时仅做 stdout 恢复，不再操作文件（避免 interpreter shutdown 时竞态）。"""
+        """析构时仅做 stdout/stderr 恢复，不再操作文件（避免 interpreter shutdown 时竞态）。"""
         if sys.stdout is self:
             sys.stdout = self.terminal
+        if sys.stderr is self:
+            sys.stderr = self.terminal_stderr
 
 
 # -------------------------------------------------------------------------
@@ -96,7 +101,8 @@ class TeeLogger:
 def enable_file_logging(log_dir: str | None = None, filename: str | None = None) -> TeeLogger:
     """启用文件日志收集。
 
-    调用后，所有 print() / sys.stdout.write() 的输出会同时写入终端和文件。
+    调用后，所有 print() / sys.stdout.write() / sys.stderr.write() 的输出
+    会同时写入终端和文件（包括异常 traceback）。
     程序退出时自动关闭日志文件。
 
     Args:
@@ -104,16 +110,19 @@ def enable_file_logging(log_dir: str | None = None, filename: str | None = None)
         filename: 日志文件名，默认自动生成（run_YYYYMMDD_HHMMSS.log）。
 
     Returns:
-        TeeLogger 实例，可用于后续手动关闭或恢复 stdout。
+        TeeLogger 实例，可用于后续手动关闭或恢复 stdout/stderr。
     """
     logger = TeeLogger(log_dir, filename)
     sys.stdout = logger
+    sys.stderr = logger  # 同时拦截 stderr，确保异常 traceback 也进入日志文件
     atexit.register(logger.close)
     return logger
 
 
 def disable_file_logging() -> None:
-    """恢复原始 stdout，停止文件日志收集。"""
+    """恢复原始 stdout/stderr，停止文件日志收集。"""
     if isinstance(sys.stdout, TeeLogger):
         sys.stdout.close()
         sys.stdout = sys.stdout.terminal
+    if isinstance(sys.stderr, TeeLogger):
+        sys.stderr = sys.stderr.terminal_stderr

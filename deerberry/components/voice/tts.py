@@ -76,8 +76,8 @@ class SiliconFlowCosyVoice:
         use_voice = voice if voice is not None else self.voice
         payload = {
             "model": self.model,
-            # "input": text,
-            "input": f"使用小男孩的声音<|endofprompt|>{text}",
+            "input": text,
+            # "input": f"使用小男孩的声音<|endofprompt|>{text}",
             "voice": use_voice,
             "speed": speed,
             "gain": gain,

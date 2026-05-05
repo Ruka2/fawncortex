@@ -17,8 +17,8 @@ from typing import Optional
 
 from agentscope.message import Msg
 
-from components.tts import SiliconFlowCosyVoice
-from scripts.tools.control_vts import express_emotion
+from deerberry.components.voice.tts import SiliconFlowCosyVoice
+from deerberry.tools.control_vts import express_emotion
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

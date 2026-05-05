@@ -14,7 +14,7 @@ from typing import Optional
 from agentscope.tool import ToolResponse
 from agentscope.message import TextBlock
 
-from components.vts_controller import VTSController
+from deerberry.components.visual.vts_controller import VTSController
 
 # 模块级 VTS 控制器引用，由外部通过 set_vts_controller() 注入
 _vts: Optional[VTSController] = None

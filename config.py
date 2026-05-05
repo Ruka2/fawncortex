@@ -4,14 +4,58 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ### LLM模型配置
-# LLM配置
+# 默认全局LLM配置（用于本项目非智能体相关的数据清洗、快速调试
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")      # e.g. OPENAI_API_KEY "sk-xxx"
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")  # e.g. OPENAI_BASE_URL "https://dashscope.aliyuncs.com/compatible-mode/v1" 
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")  # e.g. OPENAI_BASE_URL "https://dashscope.aliyuncs.com/compatible-mode/v1"
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "")    # e.g. qwen-max
+
+### 多智能体LLM配置映射表
+# 项目中的智能体/模块可以根据推理任务难度配置不同的云端LLM API
+# 每个角色需独立设置 api_key / base_url / model_name / generate_kwargs
+# 若某项未设置（空字符串或None），则自动回退到上述LLM的默认全局配置
+# 支持的角色 key：chat(对话), emotion(表情), brain(大脑/ReAct), orchestrator(任务规划), memory(记忆系统)
+def _role_cfg(role: str):
+    """读取单个角色的LLM配置，未设置时回退到默认全局配置。"""
+    prefix = role.upper()
+    return {
+        "api_key": os.getenv(f"{prefix}_LLM_API_KEY", LLM_API_KEY),
+        "base_url": os.getenv(f"{prefix}_LLM_BASE_URL", LLM_BASE_URL),
+        "model_name": os.getenv(f"{prefix}_LLM_MODEL_NAME", LLM_MODEL_NAME),
+    }
+
+# 完全配置（每个都填）
+# LLM_ROLE_CONFIG = {
+#     "chat": _role_cfg("chat"),
+#     "emotion": _role_cfg("emotion"),
+#     "brain": _role_cfg("brain"),
+#     "orchestrator": _role_cfg("orchestrator"),
+#     "memory": _role_cfg("memory"),
+# }
+# 拷贝配置，防止每次调整浪费时间
+LLM_ROLE_CONFIG = {
+    "chat": _role_cfg("chat"),
+    "emotion": _role_cfg("chat"),
+    "brain": _role_cfg("brain"),
+    "orchestrator": _role_cfg("brain"),
+    "memory": _role_cfg("brain"),
+}
+
+# 角色专属 generate_kwargs（按模型特性定制，例如是否开启 thinking）
+# 如需为某角色开启 thinking，可修改为 {"extra_body": {"enable_thinking": True}} ，必须是所使用的模型基座有这样的选项才有用
+# 部分LLM加了禁用think模式的入参之后会报错，需要注意
+LLM_ROLE_GENERATE_KWARGS = {
+    "chat": {"extra_body": {"enable_thinking": False}},
+    "emotion": {"extra_body": {"enable_thinking": False}},
+    "orchestrator": {"extra_body": {"enable_thinking": False}},
+    "brain": {"extra_body": {"enable_thinking": False}},
+    "memory": {"extra_body": {"enable_thinking": False}},
+}
 
 ### LLM推理细节设置
 # 智能体所使用到的LLM是否流式输出
 STREAM = True  # e.g. enum[True, False]
+
+
 
 ### 向量嵌入配置
 # 向量模型配置
@@ -25,6 +69,8 @@ TTS_API_KEY = os.getenv("TTS_API_KEY", "")
 TTS_BASE_URL = os.getenv("TTS_BASE_URL", "")
 TTS_MODEL_NAME = os.getenv("TTS_MODEL_NAME", "")
 TTS_VOICE = os.getenv("TTS_VOICE", "")
+
+
 
 ### 项目文件存放位置
 # 缓存数据存放位置

@@ -30,6 +30,7 @@ def create_long_term_memory(
     embedding_model_name: str,
     embedding_api_key: str,
     embedding_base_url: str,
+    llm_generate_kwargs: dict | None = None,
 ) -> Mem0LongTermMemory:
     """创建并返回 Mem0LongTermMemory 实例。
 
@@ -44,6 +45,7 @@ def create_long_term_memory(
         embedding_model_name: 嵌入模型名称。
         embedding_api_key: 嵌入模型 API 密钥。
         embedding_base_url: 嵌入模型 API 基础地址。
+        llm_generate_kwargs: 传给 LLM 的额外生成参数（如 enable_thinking）。
 
     Returns:
         配置好的 Mem0LongTermMemory 实例。
@@ -57,15 +59,19 @@ def create_long_term_memory(
         history_db_path=history_db_path,
     )
 
+    model_kwargs = {
+        "model_name": llm_model_name,
+        "api_key": llm_api_key,
+        "stream": False,
+        "client_kwargs": {"base_url": llm_base_url},
+    }
+    if llm_generate_kwargs:
+        model_kwargs["generate_kwargs"] = llm_generate_kwargs
+
     return Mem0LongTermMemory(
         agent_name=agent_name,
         user_name=user_name,
-        model=OpenAIChatModel(
-            model_name=llm_model_name,
-            api_key=llm_api_key,
-            stream=False,
-            client_kwargs={"base_url": llm_base_url},
-        ),
+        model=OpenAIChatModel(**model_kwargs),
         embedding_model=OpenAITextEmbedding(
             model_name=embedding_model_name,
             api_key=embedding_api_key,

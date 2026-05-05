@@ -22,7 +22,7 @@ from .shared_context import SharedContext
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from scripts.logger.latency_tracker import LatencyTracker
+    from deerberry.logger.latency_tracker import LatencyTracker
 
 
 class TaskExecutor:
@@ -63,12 +63,24 @@ class TaskExecutor:
         while idx < len(plan.nodes) and self._running:
             node = plan.nodes[idx]
 
+            # 如果当前是阻塞节点，先等待前面所有非阻塞后台任务完成
+            # 这样阻塞节点（如 deep_think）才能读取到前面非阻塞节点（如 quick_chat）的结果
+            if node.blocking and self._current_tasks:
+                print(f"⏳ 等待前置非阻塞任务完成...")
+                results = await asyncio.gather(*self._current_tasks, return_exceptions=True)
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        print(f"❌ 后台任务 #{i} 执行失败: {result}")
+                        import traceback
+                        traceback.print_exception(type(result), result, result.__traceback__)
+                self._current_tasks.clear()
+
             # 执行当前节点（包装计时）
             if node.blocking:
                 try:
                     await self._execute_node(node, user_msg)
                 except asyncio.CancelledError:
-                    print(f"🔇 节点 '{node.name}' 被打断")
+                    print(f"节点 '{node.name}' 被打断")
                     break
             else:
                 task = asyncio.create_task(self._execute_node(node, user_msg))
@@ -76,7 +88,7 @@ class TaskExecutor:
 
             idx += 1
 
-        # 等待所有非阻塞后台任务完成
+        # 等待剩余的非阻塞后台任务完成
         if self._current_tasks:
             results = await asyncio.gather(*self._current_tasks, return_exceptions=True)
             for i, result in enumerate(results):
@@ -116,20 +128,27 @@ class TaskExecutor:
 
         start_ts = time.perf_counter()
 
-        if node.node_type == NodeType.QUICK_CHAT:
-            await self._exec_quick_chat(node, user_msg)
-        elif node.node_type == NodeType.DEEP_THINK:
-            await self._exec_deep_think(node, user_msg)
-        elif node.node_type == NodeType.EMOTION_ACTION:
-            await self._exec_emotion_action(node, user_msg)
-        elif node.node_type == NodeType.SUMMARY_CHAT:
-            await self._exec_summary_chat(node, user_msg)
-        else:
-            print(f"⚠️  未知节点类型: {node.node_type}")
+        try:
+            if node.node_type == NodeType.QUICK_CHAT:
+                await self._exec_quick_chat(node, user_msg)
+            elif node.node_type == NodeType.DEEP_THINK:
+                await self._exec_deep_think(node, user_msg)
+            elif node.node_type == NodeType.EMOTION_ACTION:
+                await self._exec_emotion_action(node, user_msg)
+            elif node.node_type == NodeType.SUMMARY_CHAT:
+                await self._exec_summary_chat(node, user_msg)
+            else:
+                print(f"⚠️  未知节点类型: {node.node_type}")
+        except asyncio.CancelledError:
+            raise  # 打断信号需要继续向上传播
+        except Exception as e:
+            print(f"❌ 节点 '{node.name}' ({node.node_type.value}) 执行失败: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
 
         end_ts = time.perf_counter()
 
-        # 记录本节点耗时
+        # 记录本节点耗时（即使失败也记录）
         if self.latency_tracker:
             agent_name = node.agents[0] if node.agents else "unknown"
             self.latency_tracker.record_agent(
@@ -155,6 +174,15 @@ class TaskExecutor:
         ctx = self.shared_ctx.peek()
         if hasattr(agent, "inject_context"):
             agent.inject_context(ctx)
+        
+        print(f"\n{'='*60}")
+        print(f"[SharedContext DEBUG] quick_chat 调用大模型前")
+        print(f"{'='*60}")
+        for k, v in ctx.items():
+            v_str = str(v)
+            display = v_str
+            print(f"  {k}: {display}")
+        print(f"{'='*60}\n")
 
         reply = await agent.reply(user_msg)
         chat_text = reply.get_text_content()
@@ -198,26 +226,16 @@ class TaskExecutor:
             agent.inject_context(ctx)
             
         # ── Debug: 打印 quick_chat 调用前的 SharedContextData ──
-        # print(f"\n{'='*60}")
-        # print(f"[SharedContext DEBUG] summary_chat 调用大模型前")
-        # print(f"{'='*60}")
-        # for k, v in ctx.items():
-        #     v_str = str(v)
-        #     display = v_str[:300] + ("..." if len(v_str) > 300 else "")
-        #     print(f"  {k}: {display}")
-        # print(f"{'='*60}\n")
-
-        # ── Debug: 打印 quick_chat 调用前的 SharedContextData ──
-        # print(f"\n{'='*60}")
-        # print(f"[SharedContext DEBUG] summary_chat 调用大模型前")
-        # print(f"{'='*60}")
-        # for k, v in ctx.items():
-        #     v_str = str(v)
-        #     display = v_str[:300] + ("..." if len(v_str) > 300 else "")
-        #     print(f"  {k}: {display}")
-        # print(f"{'='*60}\n")
-
-        reply = await agent.reply(user_msg)
+        print(f"\n{'='*60}")
+        print(f"[SharedContext DEBUG] summary_chat 调用大模型前")
+        print(f"{'='*60}")
+        for k, v in ctx.items():
+            v_str = str(v)
+            display = v_str
+            print(f"  {k}: {display}")
+        print(f"{'='*60}\n")
+        
+        reply = await agent.reply(self._last_quick_chat_reply)
         chat_text = reply.get_text_content()
 
         # 已完成brain_agent的summary节点，清空大脑智能体需要使用的上下文
