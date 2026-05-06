@@ -60,16 +60,19 @@ async def create_arxiv_client(
     """创建并连接 arxiv-mcp-server 的 StdIO Stateful Client。
 
     Args:
-        storage_path: 论文本地存储路径，默认 ~/.arxiv-mcp-server/papers
+        storage_path: 论文本地存储路径，默认 ./data/tmp/mcp_arxiv_files
 
     Returns:
         已连接的 StdIOStatefulClient 实例
     """
     global _arxiv_client
 
+    # 使用默认路径（项目目录下统一管理）
+    if storage_path is None:
+        storage_path = "./data/tmp/mcp_arxiv_files"
+
     # 自动创建存储目录（避免 arxiv-mcp-server 启动时报目录不存在）
-    if storage_path:
-        os.makedirs(storage_path, exist_ok=True)
+    os.makedirs(storage_path, exist_ok=True)
 
     args: list[str] = []
     if storage_path:
@@ -81,12 +84,6 @@ async def create_arxiv_client(
         args=args,
     )
     await _arxiv_client.connect()
-
-    default_path = os.path.expanduser("./data/tmp/mcp_arxiv_files")
-    # print(
-    #     f"[MCP] arxiv-mcp-server 已连接，"
-    #     f"存储路径: {storage_path or default_path}"
-    # )
     return _arxiv_client
 
 

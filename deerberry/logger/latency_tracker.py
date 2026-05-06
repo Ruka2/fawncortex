@@ -10,7 +10,7 @@
     tracker = LatencyTracker()
     tracker.start_round(1, "你好")
     # ... 智能体执行时自动记录 ...
-    tracker.finish_round(clarification_option="ignore")
+    tracker.finish_round()
 """
 
 import time
@@ -88,17 +88,12 @@ class LatencyTracker:
             user_input=user_input,
         )
 
-    def finish_round(self, clarification_option: str = "ignore") -> None:
-        """一轮所有节点执行完毕后调用，计算端到端并打印报告。
-
-        Args:
-            clarification_option: brain 输出的 clarification 选项，
-                用于决定 deep_think 是否计入前台端到端。
-        """
+    def finish_round(self) -> None:
+        """一轮所有节点执行完毕后调用，计算端到端并打印报告。"""
         if not self._current:
             return
 
-        self._calc_e2e(clarification_option)
+        self._calc_e2e()
         self._reports.append(self._current)
         self._current.print_report()
         self._current = None
@@ -147,8 +142,8 @@ class LatencyTracker:
     # -------------------------------------------------------------------------
     # 内部计算
     # -------------------------------------------------------------------------
-    def _calc_e2e(self, clarification_option: str) -> None:
-        """根据节点类型和 clarification_option 计算端到端时间。"""
+    def _calc_e2e(self) -> None:
+        """根据节点类型计算端到端时间。"""
         frontend_start: Optional[float] = None
         frontend_end: float = 0.0
         backend_start: Optional[float] = None
@@ -164,13 +159,6 @@ class LatencyTracker:
                 if backend_start is None:
                     backend_start = rec.start_ts
                 backend_end = max(backend_end, rec.end_ts)
-
-                # 只有当 clarification_option != "ignore" 时，
-                # deep_think 才计入前台端到端
-                if clarification_option != "ignore":
-                    if frontend_start is None:
-                        frontend_start = rec.start_ts
-                    frontend_end = max(frontend_end, rec.end_ts)
 
         if frontend_start:
             self._current.frontend_e2e_s = (
