@@ -451,77 +451,120 @@ temp_context = f"[中间思考进展]\n{latest_reasoning[:500]}"
 
 ---
 
-## 六、流式截取设计
+## 六、流式截取设计（更新版）
 
-### 6.1 现实约束
+### 6.1 核心发现：`print()` 方法可被 Patch
 
-根据对 AgentScope `ReActAgent._reasoning()` 源码的分析：
+通过对 AgentScope `ReActAgent._reasoning()` 和 `print()` 源码的深度分析，我们发现了一个**优雅的实时截取方案**：
 
 ```python
-# _reasoning() 核心代码
-if self.model.stream:
-    async for content_chunk in res:
-        msg.content = content_chunk.content  # 完整文本快照
-        await self.print(msg, False)
+# _reasoning() stream 循环
+async for content_chunk in res:
+    msg.content = content_chunk.content  # 完整文本快照
+    await self.print(msg, False)         # ← 每次 token 都会调用
+
+# print() 方法内部
+async def print(self, msg, last=True, speech=None):
+    await self.msg_queue.put((deepcopy(msg), last, speech))
+    await asyncio.sleep(0)  # ← 关键！yield 控制权给事件循环
+    # ... 打印逻辑
 ```
 
 **关键事实**：
-1. `content_chunk.content` 是**完整文本快照**，不是增量 delta
-2. `async for` 循环内部不会 yield 控制权给外部任务
-3. `post_reasoning` hook 在 `_reasoning()` 返回后才触发
+1. `print()` 接收的 `msg` 包含当前已生成的**完整文本快照**
+2. `print()` 内部有 `await asyncio.sleep(0)`，**会 yield 控制权给事件循环**
+3. 这意味着：定时器任务可以在 stream 过程中运行，读取最新的 buffer
 
-**结论**：在 `stream=True` 模式下，无法在 stream 过程中实时截取中间内容。
+**结论**：通过 Monkey-patch `print()` 方法，可以在**不修改 `_reasoning()` 核心逻辑**的前提下，实现真正的流式截取。
 
-### 6.2 务实方案：Hook 快照
-
-**方案**：等待 `post_reasoning` 触发后获取完整内容。
+### 6.2 流式截取实现方案
 
 ```python
-# 在 BrainAgent hook 中保存每轮 reasoning 的完整文本
-async def _hook_post_reasoning(react_self, kwargs, output):
-    self._latest_reasoning_text = output.get_text_content() or ""
-    ...
-```
-
-**延迟分析**：
-
-| 模型 | reasoning 平均耗时 | post_reasoning 延迟 | 可接受？ |
-|------|-------------------|---------------------|---------|
-| qwen3.6-27b | 1-3 秒 | <10ms | ✅ 可接受 |
-| GPT-4 | 2-5 秒 | <10ms | ✅ 可接受 |
-| DeepSeek-R1 | 10-30 秒 | <10ms | ⚠️ 延迟较大 |
-
-**对于当前项目（qwen3.6-27b）**：延迟可接受。
-
-### 6.3 如果需要真正的流式截取
-
-如果未来需要"逐字截取"，有两种方案：
-
-**方案 A：Monkey-patch `_reasoning()`**
-
-```python
-# 在 BrainAgent.__init__ 中
-original_reasoning = self.agent._reasoning
-
-async def patched_reasoning(*args, **kwargs):
-    # 注入 stream buffer
-    self._stream_buffer = ""
-    # ... 这需要大幅修改 _reasoning 的内部逻辑
-    # 风险高，不推荐
-
-self.agent._reasoning = patched_reasoning
-```
-
-**方案 B：继承 ReActAgent 创建子类**
-
-```python
-class StreamingReActAgent(ReActAgent):
-    async def _reasoning(self, tool_choice):
-        # 重写 _reasoning，在 stream 循环中暴露 buffer
+class BrainAgent:
+    def __init__(self, ...):
         ...
+        # ── 流式截取缓冲区 ──
+        self._stream_buffer: str = ""
+        self._is_streaming_reasoning: bool = False
+        
+        # 保存原始 print 方法
+        original_print = self.agent.print
+        
+        async def patched_print(msg, last=True, speech=None):
+            """Patch print 方法，在 stream 过程中实时捕获 reasoning 文本。"""
+            if self._is_streaming_reasoning:
+                # 提取当前完整文本
+                text = msg.get_text_content() or ""
+                self._stream_buffer = text
+            
+            # 调用原始 print（保持原有行为）
+            await original_print(msg, last, speech)
+        
+        self.agent.print = patched_print
+        
+        # ── Hook 配合：标记 stream 起止 ──
+        async def _hook_pre_reasoning(react_self, kwargs):
+            self._is_streaming_reasoning = True
+            self._stream_buffer = ""
+            return kwargs
+        
+        async def _hook_post_reasoning(react_self, kwargs, output):
+            self._is_streaming_reasoning = False
+            self._latest_reasoning_text = output.get_text_content() or ""
+            ...
+        
+        self.agent.register_instance_hook("pre_reasoning", "brain_stream_start", _hook_pre_reasoning)
+        self.agent.register_instance_hook("post_reasoning", "brain_stream_end", _hook_post_reasoning)
+    
+    def get_stream_buffer(self) -> str:
+        """获取当前流式生成中的最新文本（供定时器调用）。"""
+        return self._stream_buffer
 ```
 
-**结论**：当前版本不实现真正的流式截取。如果未来需求强烈，再考虑方案 B。
+### 6.3 流式截取的数据流
+
+```
+_reasoning() stream 循环
+    │
+    ├── token 1 → msg.content = "我" 
+    │   → await self.print(msg, False)
+    │       → patched_print()
+    │           → _stream_buffer = "我"
+    │           → await asyncio.sleep(0)  ← 定时器获得执行权
+    │               → midway_watcher 读取 _stream_buffer → "我"
+    │
+    ├── token 2 → msg.content = "我在"
+    │   → await self.print(msg, False)
+    │       → patched_print()
+    │           → _stream_buffer = "我在"
+    │           → await asyncio.sleep(0)  ← 定时器获得执行权
+    │               → midway_watcher 读取 _stream_buffer → "我在"
+    │
+    ├── token 3 → msg.content = "我在查"
+    │   → ...
+    │
+    └── stream 完成
+        → post_reasoning hook
+        → _stream_buffer 不再更新
+```
+
+### 6.4 延迟分析
+
+| 模型 | 平均每 token 耗时 | `print()` 触发频率 | 定时器读取延迟 | 可接受？ |
+|------|------------------|-------------------|--------------|---------|
+| qwen3.6-27b | 50-100ms | 每 token 一次 | <100ms | ✅ 优秀 |
+| GPT-4 | 30-80ms | 每 token 一次 | <80ms | ✅ 优秀 |
+| DeepSeek-R1 | 100-300ms | 每 token 一次 | <300ms | ✅ 可接受 |
+
+**结论**：`print()` Patch 方案的延迟极低（<300ms），完全满足"实时截取"需求。
+
+### 6.5 风险与缓解
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|---------|
+| `print()` 被 `_acting` 调用时误捕获 | `_stream_buffer` 被 tool_result 污染 | 通过 `_is_streaming_reasoning` 标志区分，只有 reasoning stream 期间才捕获 |
+| `print()` Patch 导致 AgentScope 升级不兼容 | 未来升级后行为异常 | Patch 代码集中在 BrainAgent 初始化中，升级时容易替换；同时添加版本检查 |
+| 高频更新 `_stream_buffer` 导致竞争条件 | 定时器读取到不完整内容 | 使用 Python GIL 保护（单线程模型下无需锁）；`str` 赋值是原子操作 |
 
 ---
 
@@ -583,21 +626,26 @@ class StreamingReActAgent(ReActAgent):
 
 ## 八、实现路径（分阶段）
 
-### 阶段 1：状态同步 + Hook 增强（1 天）
+### 阶段 1：状态同步 + Hook 增强 + 流式截取（1-2 天）
 
-**目标**：实现子状态追踪和状态信息追加。
+**目标**：实现子状态追踪、状态信息追加、流式截取。
 
 **修改文件**：
 - `deerberry/agent/brain_agent.py`
-  - [ ] 新增 `_sub_status`, `_latest_reasoning_text`, `_latest_tool_name`, `_has_used_tools`
+  - [ ] 新增 `_sub_status`, `_latest_reasoning_text`, `_latest_tool_name`, `_has_used_tools`, `_think_start_ts`
   - [ ] 在 hook 中更新子状态
   - [ ] 新增 `_build_status_suffix()` 方法
   - [ ] 在 `think()` 中追加状态信息到 insight
+  - [ ] **新增**：Patch `print()` 方法实现流式截取
+  - [ ] **新增**：`pre_reasoning` hook 标记 stream 起止
+  - [ ] 新增 `get_stream_buffer()` 公共接口
 
 **验证点**：
 - [ ] `post_reasoning` 触发后 `_sub_status` 正确更新
 - [ ] `post_acting` 触发后 `_sub_status` 回到 idle
 - [ ] `_has_used_tools` 在有工具调用时标记为 True
+- [ ] **新增**：stream 过程中 `_stream_buffer` 实时更新
+- [ ] **新增**：非 stream 模式下 `_stream_buffer` 不捕获 acting 内容
 
 ### 阶段 2：阈值反思限制 + 中间介入（2-3 天）
 
@@ -642,6 +690,8 @@ class StreamingReActAgent(ReActAgent):
 2. 复杂问题（有工具调用）：中间介入 + 最终判断
 3. 工具调用缓慢：中间介入显示"正在查询..."
 4. 多轮对话：brain 能感知已汇报内容，避免重复
+5. **新增**：流式截取验证（`stream=True` 模式下 buffer 实时更新）
+6. **新增**：慢模型模拟（人为增加 reasoning 延迟，验证流式截取效果）
 
 ---
 
@@ -660,70 +710,61 @@ class StreamingReActAgent(ReActAgent):
 
 ### 9.2 待用户确认的技术点
 
-#### ❓ 确认 1：中间汇报的频率
+#### ✅ 确认 1：中间汇报的频率
 
-**问题**：每轮对话最多允许几次中间介入？
+**用户确认**：无限次介入，但上限 10 轮，设置为可配置变量。
 
-**选项**：
-- **A. 每轮最多 1 次**（推荐）：超过阈值后介入一次，然后不再介入，等 completed
-- **B. 每轮允许多次**：每次超过阈值都介入（可能导致用户被打断多次）
+**实现**：`MAX_MIDWAY_INTERVENTIONS = 10`（可配置），每轮通过计数器控制。超过上限后不再介入，等待 completed。
 
-**建议**：选 A。多次介入会频繁打断用户，体验差。
+#### ✅ 确认 2：动态阈值的公式
 
-#### ❓ 确认 2：动态阈值的公式
+**用户确认**：`threshold = 5.0 + chat_length / 10.0`（上限 30 秒）合适，后续通过日志和实际测试调参。
 
-**问题**：当前设计使用 `threshold = 5.0 + chat_length / 10.0`（上限 30 秒），是否合适？
+#### ✅ 确认 3：中间汇报的内容风格
 
-**示例**：
+**用户确认**：不需要控制风格。ChatAgent 基于中间思考上下文自主决定如何表达。
 
-| 前台回复长度 | 阈值 |
-|------------|------|
-| 10 字 | 6 秒 |
-| 50 字 | 10 秒 |
-| 100 字 | 15 秒 |
+**说明**：我提出此问题的初衷是考虑是否在临时上下文中添加"风格指导"的 system prompt。但用户说得对——ChatAgent 有自己的 system prompt，会基于提供的上下文自主生成自然回复，无需额外控制。
 
-**建议**：先按此公式实现，后续根据实际运行日志调参。
+#### ✅ 确认 4：状态信息追加位置
 
-#### ❓ 确认 3：中间汇报的内容风格
+**用户问题**："状态信息追加位置是什么意思？"
 
-**问题**：ChatAgent 的中间汇报应该是什么风格？
+**解释**：这是指 BrainAgent 的子状态信息（如"正在调用 search_papers 工具中..."）应该放在哪里，以便其他智能体获取。
 
-**选项**：
-- **A. 自然口语化**（推荐）：如"正在帮你查论文呢，稍等一下哦~"
-- **B. 技术性说明**：如"[系统状态] 正在调用 search_papers 工具..."
+用户原始需求中提到："这种子状态信息也可以作为对话信息来补充，介入目前这个对话信息我认为是固定一个字符串追加到大脑智能体的思考尾部较佳。"
 
-**建议**：选 A。从用户体验角度，自然口语化更好。可以通过 system prompt 引导 ChatAgent："请向用户简要说明当前进展，保持自然、口语化"。
+**实现方式**：在 `BrainAgent.think()` 返回的 `insight` 字符串尾部追加状态摘要。例如：
+```python
+data = {
+    "insight": text.strip() + "\n\n[系统状态] 正在调用 search_papers 工具中...",
+    ...
+}
+```
 
-#### ❓ 确认 4：状态信息追加位置
+这样 ReflectionAgent 的 `judge_after_brain()` 和 ChatAgent 都能获取到状态信息。
 
-**问题**：BrainAgent 的状态信息（"正在思考中..."）应该追加到哪里？
+#### ✅ 确认 5：observe 回灌的角色
 
-**选项**：
-- **A. 追加到 `think()` 返回的 `insight` 尾部**（推荐）：这样 ReflectionAgent 和 ChatAgent 获取的 insight 都包含状态信息
-- **B. 作为独立属性暴露**：如 `brain.get_status_suffix()`，由调用方决定是否使用
+**用户确认**：`assistant` 角色。
 
-**建议**：选 A。这样所有消费 insight 的地方都能自动获取状态信息，无需额外调用。
+**实现**：
+```python
+observe_msg = Msg(
+    name="assistant",
+    content=f"[已回复用户] {midway_reply_text}",
+    role="assistant",
+)
+await brain_bg.brain.agent.observe(observe_msg)
+```
 
-#### ❓ 确认 5：observe 回灌的角色
+**说明**：使用 `assistant` 角色意味着 BrainAgent 会将这条消息视为"自己之前说过的话"。这在语义上表示"我（通过 ChatAgent）已经向用户汇报过了"，有利于 BrainAgent 后续避免重复。
 
-**问题**：ChatAgent 的中间回复 observe 回灌到 BrainAgent 时，使用什么 role？
+#### ✅ 确认 6：需要真正的流式截取
 
-**选项**：
-- **A. system**（推荐）：明确标识为系统通知，不影响 user/assistant 交替
-- **B. user**：让 brain 以为用户在说话
-- **C. assistant**：让 brain 以为自己已经说了这些话
+**用户确认**：需要真正的流式截取，因为项目后续要通过配置支持多组 LLM（包括可能更慢的模型）。
 
-**建议**：选 A。system 角色语义最正确。
-
-#### ❓ 确认 6：是否需要真正的流式截取
-
-**问题**：当前方案使用 `post_reasoning` 快照（延迟 1-3 秒），是否需要升级为真正的流式截取？
-
-**选项**：
-- **A. 当前版本不需要**（推荐）：qwen3.6-27b 的 reasoning 很快，快照足够
-- **B. 需要**：未来可能切换到更慢的模型（如 DeepSeek-R1）
-
-**建议**：选 A。如果需要，可在阶段 4 后作为独立任务实现。
+**更新方案**：详见第六章「流式截取设计（更新版）」。核心思路：通过 Monkey-patch `ReActAgent.print()` 方法，在 stream 过程中实时暴露 `_stream_buffer`。
 
 ---
 
@@ -734,9 +775,9 @@ class StreamingReActAgent(ReActAgent):
 | 状态同步（子状态） | Hook 更新 `_sub_status` | 低 | P0 | 无 |
 | 状态信息追加 | `think()` 返回 insight 尾部追加 | 低 | P0 | 状态同步 |
 | 阈值反思限制 | 动态阈值 + 独立 midway_watcher Task | 中 | P0 | 状态同步 |
-| 上下文隔离 | 临时上下文 + observe 回灌 | 中 | P0 | 阈值反思 |
-| 流式截取 | `post_reasoning` 快照（务实方案） | 低 | P1 | 无 |
-| 真正的流式截取 | Monkey-patch 或继承 ReActAgent | 高 | P2 | 未来需求 |
+| 上下文隔离 | 临时上下文 + observe 回灌 (assistant) | 中 | P0 | 阈值反思 |
+| **流式截取** | **Patch `print()` 方法** | **中** | **P0** | **无** |
+| 配置化（中间汇报上限等） | 环境变量 / config.py | 低 | P1 | 阈值反思 |
 
 **下一步行动**：
 1. 用户确认上述 6 个待确认技术点
