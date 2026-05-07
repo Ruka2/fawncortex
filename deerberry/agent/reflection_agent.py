@@ -70,6 +70,7 @@ class ReflectionAgent(SimpleAgent):
 
 
     # ── 判断 1：前台完成后（保持规则驱动，轻量快速）──
+    # 目前这个判断不知道有什么用，因为后台大脑智能体一直是常驻开着的，前台响应无论是否正常都不影响大脑智能体运行
     async def judge_after_front(
         self,
         chat_response: Optional[Msg],
@@ -89,11 +90,11 @@ class ReflectionAgent(SimpleAgent):
                 target="BrainAgent",
                 payload="前台已快速解决，Brain 停止过度思考",
             )
-
         return InterventionEvent(action="none", target="")
 
-    # ── 判断 2：Brain 思考完成后（LLM 驱动）──
 
+
+    # ── 判断 2：Brain 思考完成后（LLM 驱动）──
     async def judge_after_brain(
         self,
         thought: ThoughtEvent,
@@ -177,7 +178,6 @@ class ReflectionAgent(SimpleAgent):
             )
 
     # ── 判断 3：Brain 思考超时（规则驱动）──
-
     async def judge_timeout(
         self,
         brain_status: str,
@@ -191,14 +191,4 @@ class ReflectionAgent(SimpleAgent):
                 target="BrainAgent",
                 payload=f"思考超时（>{timeout_limit}s），强制终止",
             )
-        return InterventionEvent(action="none", target="")
-
-    # ── 判断 4：主动追问（预留扩展点）──
-
-    async def judge_proactive_clarify(
-        self,
-        chat_response: Optional[Msg],
-        thought: Optional[ThoughtEvent],
-    ) -> InterventionEvent:
-        """【策略占位 / 扩展点】主动追问判断。"""
         return InterventionEvent(action="none", target="")

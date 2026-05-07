@@ -53,10 +53,13 @@ class InterventionEvent:
     """ReflectionAgent 发布的干预事件。
 
     action 枚举：
-    - "none"      : 不干预
-    - "inject"    : 将 Brain 思考结果注入 ChatAgent，触发插话/补充
-    - "stop_brain": Brain 过度思考，强制打断
-    - "clarify"   : 请求 ChatAgent 向用户发起澄清追问
+   - "summarize" : Brain 有 Chat 未提及的新事实，触发总结插话
+   - "ignore"    : Chat 已正确回答，Brain 结果无需再提
+   - "clarify"   : 发现对话中智能体可能存在信息缺失情况，请求 ChatAgent 追问请求用户补足信息
+   - "stop_brain": Brain 过度思考，强制打断
+   - "none"      : 不干预
+    
+    
     """
     topic: str = "reflection.intervention"
     action: str = "none"
@@ -117,10 +120,11 @@ class EventBus:
         self._running = False
 
 
+
+
 # =============================================================================
 # 【基础设施】BackgroundBrainAgent — BrainAgent 的后台常驻包装器
 # =============================================================================
-
 class BackgroundBrainAgent:
     """BrainAgent 的后台常驻包装器。
 

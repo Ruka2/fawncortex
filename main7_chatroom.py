@@ -309,10 +309,15 @@ async def main() -> None:
                         print(f"   {insight[:100]}{'...' if len(insight) > 100 else ''}")
 
                         # 将大脑洞察作为 assistant 消息加入对话历史（短期上下文）
+                        # insight_msg = Msg(
+                        #     name="system",   # FIXME: 小心注意这个位置， 这个是在上下文中间插入一个system作为非用户和非assistant的角色
+                        #     content=f"### 智能体已后台思考的内容\n{insight}",
+                        #     role="system",
+                        # )
                         insight_msg = Msg(
-                            name="system",   # FIXME: 小心注意这个位置， 这个是在上下文中间插入一个system作为非用户和非assistant的角色
+                            name="assistant",   # FIXME: 小心注意这个位置， 这个是在上下文中间插入一个system作为非用户和非assistant的角色
                             content=f"### 智能体已后台思考的内容\n{insight}",
-                            role="system",
+                            role="assistant",
                         )
                         await chat_agent.memory.add(insight_msg)
                         
