@@ -55,10 +55,11 @@ from deerberry.tools.search_memory import (
     retrieve_from_memory,
     record_to_memory,
 )
-from deerberry.tools.arxiv_search import (
-    create_arxiv_client,
-    register_arxiv_tools,
-    close_arxiv_client,
+from deerberry.tools.paper_search import (
+    search_papers,
+    get_paper_details,
+    search_authors,
+    read_paper,
 )
 
 # 外部非智能体执行工具
@@ -148,9 +149,6 @@ async def main() -> None:
     set_memory_manager(long_term_memory)
     print(f"[init] 长期记忆已初始化: {config.MEM0_HISTORY_DB_PATH}")
 
-    # ── 2.5 初始化 arXiv MCP 客户端 ──
-    await create_arxiv_client()
-    print("[init] arXiv MCP 客户端已连接")
 
     # ── 3. 按角色创建专用大模型实例 ──
     chat_model = build_model_for_role("chat", stream=config.STREAM)
@@ -177,7 +175,10 @@ async def main() -> None:
     toolkit = Toolkit()
     toolkit.register_tool_function(retrieve_from_memory)
     toolkit.register_tool_function(record_to_memory)
-    await register_arxiv_tools(toolkit)
+    toolkit.register_tool_function(search_papers)
+    toolkit.register_tool_function(read_paper)
+    toolkit.register_tool_function(get_paper_details)
+    toolkit.register_tool_function(search_authors)
     schemas = toolkit.get_json_schemas()
     print(f"[init] Brain Agent Toolkit 已组装，共 {len(schemas)} 个工具")
 
@@ -244,6 +245,9 @@ async def main() -> None:
                     msg=msg, round_id=round_num
                 ))
 
+                # 【ReflectionAgent】积累用户输入到对话历史（observe 方案 C）
+                await reflection.observe(msg)
+
                 # ── 6.3 前台并行轨道：ChatAgent + EmotionAgent ──
                 # 【前台智能体】由 FrontStagePipeline 统一封装并行执行 + 结果组合 + 输出调度
                 chat_result, emotion_result = await front_stage.respond(msg)
@@ -281,46 +285,57 @@ async def main() -> None:
                     if brain_output["status"] == "completed":
                         thought = brain_output["thought"]
 
+                        # 【ReflectionAgent】先积累前台回复到对话历史
+                        # 必须在 judge 之前 observe，确保 reflection 的上下文包含
+                        # 对话智能体(Chat Agent)的提前响应，避免 history 以 user 结尾
+                        # 导致 review prompt 追加后出现连续 user
+                        await reflection.observe(chat_result)
+
                         # ── 6.6 ReflectionAgent 第二次审判：Brain 完成后 ──
                         intervention2 = await reflection.judge_after_brain(
                             thought=thought,
                             chat_response=chat_result,
+                            user_question=user_input_raw,
                         )
 
-                        if intervention2.action == "clarify":
-                            insight = intervention2.payload
-                            print(f"[Reflection] 💡 Brain 洞察同步到 ChatAgent")
-                            print(f"   {insight[:100]}{'...' if len(insight) > 100 else ''}")
+                    if intervention2.action == "ignore":
+                            print(f"[Reflection] ⏭️ Brain 结果被忽略")
+                            print(f"   原因: {intervention2.payload}")
 
-                            # 将大脑洞察作为 assistant 消息加入对话历史（短期上下文）
-                            # 以智能体自身角度署名，像是一次内心认知/后台思考笔记
-                            insight_msg = Msg(
-                                name=chat_agent.name,
-                                content=insight,
-                                role="assistant",
-                            )
-                            await chat_agent.memory.add(insight_msg)
-                            
-                            # 触发 ChatAgent 基于大脑洞察再次回复，向用户追问
-                            follow_up = await chat_agent.reply(
-                                Msg(name="user", content="请你根据你的思考继续回复", role="user")
-                            )
-                            
-                            follow_text = follow_up.get_text_content() or ""
-                            print(f"💬 [追问] {follow_text}")
+                    elif intervention2.action in ("clarify", "summarize"):
+                        insight = intervention2.payload
+                        action_label = "总结" if intervention2.action == "summarize" else "追问"
+                        print(f"[Reflection] 💡 Brain {action_label}同步到 ChatAgent")
+                        print(f"   {insight[:100]}{'...' if len(insight) > 100 else ''}")
 
-                            # 将追问回复也加入对话历史，保持上下文连贯
-                            await chat_agent.memory.add(follow_up)
+                        # 将大脑洞察作为 assistant 消息加入对话历史（短期上下文）
+                        insight_msg = Msg(
+                            name="system",   # FIXME: 小心注意这个位置， 这个是在上下文中间插入一个system作为非用户和非assistant的角色
+                            content=f"### 智能体已后台思考的内容\n{insight}",
+                            role="system",
+                        )
+                        await chat_agent.memory.add(insight_msg)
+                        
+                        # 触发 ChatAgent 基于大脑洞察再次回复
+                        follow_up = await chat_agent.reply(
+                            Msg(name="user", content="请你结合上下文和思考内容继续回复", role="user")
+                        )
+                        
+                        follow_text = follow_up.get_text_content() or ""
+                        print(f"💬 [{action_label}] {follow_text}")
 
-                            # 插队播报追问内容（高优先级）
-                            await scheduler.schedule(
-                                follow_text,
-                                EmotionAgent.parse_action(
-                                    emotion_result.get_text_content()
-                                ) if emotion_result else "smile",
-                                "brain_clarify",
-                                priority=Priority.HIGH,
-                            )
+                        # 将追问回复也加入对话历史，保持上下文连贯
+                        await chat_agent.memory.add(follow_up)
+
+                        # 插队播报追问内容（高优先级）
+                        await scheduler.schedule(
+                            follow_text,
+                            EmotionAgent.parse_action(
+                                emotion_result.get_text_content()
+                            ) if emotion_result else "smile",
+                            "brain_clarify",
+                            priority=Priority.HIGH,
+                        )
                             
 
                     elif brain_output["status"] == "cancelled":
@@ -352,24 +367,30 @@ async def main() -> None:
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        print(f"💥 程序主循环致命异常: {type(e).__name__}: {e}")
+        # 【全局异常捕获】初始化阶段或主循环外层异常
+        print(f"\n{'='*60}")
+        print(f"💥 程序致命异常: {type(e).__name__}: {e}")
+        print(f"{'='*60}")
         import traceback
         traceback.print_exc()
     finally:
         # ── 优雅关闭 ──
-        print("[Shutdown] 正在关闭输出调度器...")
-        await scheduler.stop()
-
-        print("[Shutdown] 正在关闭 BackgroundBrainAgent...")
-        await brain_bg.stop()
-        brain_task.cancel()
         try:
-            await brain_task
-        except asyncio.CancelledError:
-            pass
+            print("[Shutdown] 正在关闭输出调度器...")
+            await scheduler.stop()
+        except Exception as e:
+            print(f"[Shutdown] 关闭 scheduler 失败: {e}")
 
-        print("[Shutdown] 正在关闭 MCP 服务...")
-        await close_arxiv_client()
+        try:
+            print("[Shutdown] 正在关闭 BackgroundBrainAgent...")
+            await brain_bg.stop()
+            brain_task.cancel()
+            try:
+                await brain_task
+            except asyncio.CancelledError:
+                pass
+        except Exception as e:
+            print(f"[Shutdown] 关闭 brain_bg 失败: {e}")
 
 
 if __name__ == "__main__":
@@ -377,6 +398,13 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("[Logger] 程序已正常中断")
+    except Exception as e:
+        # 【入口层兜底】捕获 async.run 抛出的任何未处理异常
+        print(f"\n{'='*60}")
+        print(f"💥 入口层未捕获异常: {type(e).__name__}: {e}")
+        print(f"{'='*60}")
+        import traceback
+        traceback.print_exc()
     finally:
         import os
         from deerberry.logger.logger import TeeLogger

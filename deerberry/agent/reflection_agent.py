@@ -3,71 +3,86 @@
 =============================
 元认知审判官 / 聊天室导演。
 
+基于 SimpleAgent（单步 LLM 调用，无 ReAct 循环），快速判断：
+- BrainAgent 的思考结果是否需要同步给用户
+- 前台 Agent 的响应质量与时机
+
 职责：
 1. 监控前台 Agent（Chat/Emotion）的响应质量与时机
 2. 监控后台 BrainAgent 的思考状态（是否过度思考、是否有价值）
 3. 发布 InterventionEvent，决定：
-   - inject    : Brain 有有价值信息，触发 ChatAgent 插话
+   - summarize : Brain 有 Chat 未提及的新事实，触发总结插话
+   - ignore    : Chat 已正确回答，Brain 结果无需再提
+   - clarify   : 发现对话中智能体可能存在信息缺失情况，请求 ChatAgent 追问请求用户补足信息
    - stop_brain: Brain 过度思考，强制打断
-   - clarify   : 发现信息缺失，请求 ChatAgent 追问
    - none      : 不干预
-
-【架构标注说明】
-- 【策略占位】：仅提供规则骨架/启发式，需你后续替换为 LLM 驱动或精细化规则
 """
 
+import json
 from typing import Optional
 
 from agentscope.message import Msg
 from agentscope.model import OpenAIChatModel
+from agentscope.memory import InMemoryMemory
+from agentscope.formatter import OpenAIChatFormatter
 
-# 从事件总线模块导入事件类型
+from deerberry.base.simple_agent import SimpleAgent
 from deerberry.pipeline.chatroom_controller import ThoughtEvent, InterventionEvent
 
 
-class ReflectionAgent:
+class ReflectionAgent(SimpleAgent):
     """反思智能体（Meta-Cognitive Controller / 审判官）。
-
-    【当前实现状态】
-    - 当前为"规则驱动"（简单启发式），用于快速验证架构
-    - 【策略占位】处都是你未来可替换为 LLM 驱动判断的位置
-    - 所有 judge_* 方法都是非阻塞的（轻量级，不调用大模型）
+    基于 SimpleAgent 实现：单步 LLM 调用，无 ReAct 循环，快速完成判断。
     """
 
+    DEFAULT_SYS_PROMPT = \
+"""你是智能体集群的任务编排器，你的职责是判断后台思考智能体(Brain Agent)完成深度思考后，其深度思考的结果是否有需要告知给用户。
+
+输入信息：
+1. 用户的对话内容
+2. 对话智能体(Chat Agent)已经给出的回复
+3. 后台思考智能体(Brain Agent)的深度思考结果（可能包含工具查询到的数据）
+
+判断规则：
+- summarize: Brain Agent 提供了 Chat Agent 没有提到的新事实/数据/结论，需要总结告知用户
+- clarify: Brain Agent 发现对话中用户可能存在信息缺失或智能体理解模糊，需要请求 Chat Agent 响应向用户追问澄清
+- ignore: Chat Agent 已经正确完整地回答了用户，Brain Agent 的结果只是重复或补充说明，则不需要再次响应 Chat Agent，避免打扰用户或出现重复回答
+
+你只能输出一个 token 标记，从以下枚举值进行选取: ["summarize", "ignore", "clarify"]
+"""
+
     def __init__(self, model: Optional[OpenAIChatModel] = None) -> None:
-        # model 预留：未来可用 LLM 做复杂判断
-        self.model = model
+        if model is None:
+            raise ValueError("ReflectionAgent 需要传入 model 参数")
+
+        super().__init__(
+            name="reflection",
+            sys_prompt=self.DEFAULT_SYS_PROMPT,
+            model=model,
+            memory=InMemoryMemory(),
+            formatter=OpenAIChatFormatter(),
+            save_to_memory=False,
+        )
+
         self.chat_history: list[Msg] = []
         self.thought_history: list[ThoughtEvent] = []
 
-    # ── 判断 1：前台完成后 ──
 
+
+    # ── 判断 1：前台完成后（保持规则驱动，轻量快速）──
     async def judge_after_front(
         self,
         chat_response: Optional[Msg],
         emotion_response: Optional[Msg],
-        brain_status: str,          # "idle" | "thinking" | "completed"
+        brain_status: str,
         elapsed: float,
     ) -> InterventionEvent:
         """前台 Agent（Chat + Emotion）完成后立即判断。
 
-        【触发场景】
-        - BrainAgent 还在思考，但 ChatAgent 已经快速回复了简单内容
-        - 判定 Brain 是否还在做无意义的深度思考
+        当前保持规则驱动：Brain 思考超时则强制打断。
         """
-        # 【策略占位】规则 1：Brain 思考超过阈值，且 Chat 已给出短回复 → 可能过度思考
-        OVER_THINK_THRESHOLD = 60.0  # 秒，【策略占位】建议后续根据模型延迟动态调整
-        CHAT_SHORT_THRESHOLD = 50    # 字符数，【策略占位】建议后续用 LLM 判断问题复杂度
+        OVER_THINK_THRESHOLD = 60.0
 
-        # if brain_status == "thinking" and elapsed > OVER_THINK_THRESHOLD:
-        #     if chat_response:
-        #         text = chat_response.get_text_content() or ""
-        #         if len(text) < CHAT_SHORT_THRESHOLD:
-        #             return InterventionEvent(
-        #                 action="stop_brain",
-        #                 target="BrainAgent",
-        #                 payload="前台已快速解决，Brain 停止过度思考",
-        #             )
         if brain_status == "thinking" and elapsed > OVER_THINK_THRESHOLD:
             return InterventionEvent(
                 action="stop_brain",
@@ -77,47 +92,91 @@ class ReflectionAgent:
 
         return InterventionEvent(action="none", target="")
 
-    # ── 判断 2：Brain 思考完成后 ──
+    # ── 判断 2：Brain 思考完成后（LLM 驱动）──
 
     async def judge_after_brain(
         self,
         thought: ThoughtEvent,
         chat_response: Optional[Msg],
+        user_question: str = "",
+        chat_history: Optional[list[Msg]] = None,
     ) -> InterventionEvent:
-        """BrainAgent 思考完成后的判断。
+        """BrainAgent 思考完成后的 LLM 驱动判断。
 
-        【触发场景】
-        - Brain 产出了认知洞察文本
-        - 将洞察同步到 ChatAgent 的上下文中，供下一轮回复使用
+        Args:
+            thought: BrainAgent 思考完成事件
+            chat_response: ChatAgent 的前台回复
+            user_question: 用户的原始问题文本
+            chat_history: 外部传入的对话历史（方案 A）；若为 None，则从 self.memory 读取（方案 C）
 
-        【设计变更说明】
-        旧版：从 JSON 中提取特定字段（clarification_reason / user_intent 等）
-        新版：直接传递 Brain 的自然语言洞察文本，由 ChatAgent 自行理解和运用
+        Returns:
+            InterventionEvent，action 可能为 summarize / ignore / clarify
         """
-        raw = thought.raw_data
-        insight = raw.get("insight", "")
-        
-        # TODO: 使用模型来判断反思后的行为应该是什么，现在默认固定为大脑智能体响应后一定进行追答
+        chat_text = chat_response.get_text_content() if chat_response else ""
+        brain_text = thought.raw_data.get("insight", "") if thought else ""
 
-        # 如果 Brain 产出了有价值的洞察文本，同步到 ChatAgent
-        # if insight and len(insight.strip()) > 10:
-        #     return InterventionEvent(
-        #         action="inject",
-        #         target="ChatAgent",
-        #         payload=insight.strip(),
-        #     )
-        
-        return InterventionEvent(
+        # ── 方案 A + C：获取对话历史 ──
+        # 优先使用外部传入的 chat_history，否则从 self.memory 读取（observe 积累）
+        history_msgs = chat_history if chat_history is not None else await self.memory.get_memory()
+
+        # 构造当前审查消息
+        review_content = f"""请根据以下对话内容、已回复内容、思考结果，输出任务编排判断：
+
+【用户本轮对话内容】：
+{user_question}
+
+【对话Chat Agent已回复】：
+{chat_text}
+
+【后台Brain Agent思考结果】：
+{brain_text}
+"""
+
+        # ── 直接构造完整 prompt（system + 历史 + 当前审查）──
+        # 不经过 self.reply()，因为 save_to_memory=False 会导致当前 msg 被丢弃
+        messages = [
+            Msg("system", self.sys_prompt, "system"),
+            *history_msgs,
+            Msg(name="user", content=review_content, role="user"),
+        ]
+        prompt = await self.formatter.format(messages)
+        await self.print_llm_prompt(prompt)
+
+        # 直接调用模型
+        response = await self.model(prompt)
+        result_text = await self._extract_content(response)
+        await self.print_llm_response(result_text)
+
+        # ── 解析 token 输出 ──
+        text = result_text.strip().lower()
+
+        # 取第一个有效词作为 action（LLM 可能输出换行或额外空格）
+        action = text.split()[0] if text else "ignore"
+
+        # payload 固定使用 BrainAgent 的洞察原文
+        payload = brain_text
+
+        if action == "summarize":
+            return InterventionEvent(
+                action="summarize",
+                target="ChatAgent",
+                payload=payload,
+            )
+        elif action == "clarify":
+            return InterventionEvent(
                 action="clarify",
                 target="ChatAgent",
-                payload=insight.strip(),
+                payload=payload,
+            )
+        else:
+            # 包括 "ignore" 或任何无法识别的 token
+            return InterventionEvent(
+                action="ignore",
+                target="",
+                payload="",
             )
 
-        return InterventionEvent(action="none", target="")
-
-
-
-    # ── 判断 3：Brain 思考超时 ──
+    # ── 判断 3：Brain 思考超时（规则驱动）──
 
     async def judge_timeout(
         self,
@@ -125,12 +184,7 @@ class ReflectionAgent:
         timeout_limit: float,
         elapsed: float,
     ) -> InterventionEvent:
-        """Brain 思考超时的兜底判断。
-
-        【触发场景】
-        - BrainAgent 思考时间超过用户可接受阈值（如 5~8 秒）
-        - 强制终止，避免用户长时间无反馈
-        """
+        """Brain 思考超时的兜底判断。"""
         if brain_status == "thinking" and elapsed > timeout_limit:
             return InterventionEvent(
                 action="stop_brain",
@@ -139,19 +193,12 @@ class ReflectionAgent:
             )
         return InterventionEvent(action="none", target="")
 
-    # ── 判断 4：主动追问（高级功能）──
+    # ── 判断 4：主动追问（预留扩展点）──
 
     async def judge_proactive_clarify(
         self,
         chat_response: Optional[Msg],
         thought: Optional[ThoughtEvent],
     ) -> InterventionEvent:
-        """【策略占位 / 扩展点】主动追问判断。
-
-        场景：Brain 发现信息严重缺失，但前台 Chat 已经给出了回复，
-        此时 ReflectionAgent 可以判定"前台回复过早，需要追加追问"。
-
-        当前未实现，预留接口。
-        """
-        # TODO: 实现复杂的追问判断逻辑
+        """【策略占位 / 扩展点】主动追问判断。"""
         return InterventionEvent(action="none", target="")

@@ -85,3 +85,8 @@ LOG_DIR = os.getenv("LOG_DIR", "./logs")
 VTS_HOST = os.getenv("VTS_HOST", "localhost")
 VTS_PORT = int(os.getenv("VTS_PORT", "25565"))
 
+
+
+### Semantic Scholar 论文搜索配置
+S2_API_KEY = os.getenv("S2_API_KEY", "")
+
