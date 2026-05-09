@@ -94,7 +94,10 @@ class OutputScheduler:
 
         用户新输入到达时调用，停止所有待播报内容。
         """
-        # 1. 取消当前正在进行的 TTS 任务
+        # 1. 立即停止音频播放（同步阻塞的 sd.play 需要通过 sd.stop 中断）
+        self.tts.stop()
+
+        # 2. 取消当前正在进行的 TTS 任务
         if self._current_tts_task and not self._current_tts_task.done():
             self._current_tts_task.cancel()
             try:
@@ -103,7 +106,7 @@ class OutputScheduler:
                 pass
             self._current_tts_task = None
 
-        # 2. 清空待播报队列
+        # 3. 清空待播报队列
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()

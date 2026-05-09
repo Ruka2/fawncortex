@@ -51,13 +51,37 @@ _DEFAULT_CITE_FIELDS = (
     "paperId,title,authors,year,venue,url,abstract"
 )
 _DEFAULT_AUTHOR_FIELDS = (
-    "authorId,name,aliases,affiliations,paperCount,citationCount,hIndex,url"
+    "authorId,name,affiliations,paperCount,citationCount,hIndex,url"
 )
 
 
 # =============================================================================
-# 内部请求工具
+# 内部请求工具（带 429 重试 + 缓存）
 # =============================================================================
+
+class _APICache:
+    """简易 URL 响应缓存（TTL 60 秒），避免重复请求触发 429。"""
+
+    def __init__(self, ttl_sec: int = 60):
+        self._ttl = ttl_sec
+        self._store: dict[str, tuple[float, dict]] = {}
+
+    def get(self, url: str) -> dict | None:
+        import time
+        if url in self._store:
+            ts, data = self._store[url]
+            if time.time() - ts < self._ttl:
+                return data
+            del self._store[url]
+        return None
+
+    def set(self, url: str, data: dict) -> None:
+        import time
+        self._store[url] = (time.time(), data)
+
+
+_api_cache = _APICache(ttl_sec=60)
+
 
 def _build_request(url: str) -> urllib.request.Request:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -66,11 +90,41 @@ def _build_request(url: str) -> urllib.request.Request:
     return req
 
 
-def _fetch_json(url: str) -> dict:
-    """执行 GET 请求并返回 JSON。"""
+def _fetch_json(url: str, max_retries: int = 3) -> dict:
+    """执行 GET 请求并返回 JSON。
+
+    对 HTTP 429（限流）自动进行指数退避重试（1s / 2s / 4s）。
+    相同 URL 60 秒内重复调用会直接返回缓存结果，进一步降低 429 概率。
+    """
+    import time
+    import urllib.error
+
+    # 1. 先查缓存
+    cached = _api_cache.get(url)
+    if cached is not None:
+        return cached
+
+    # 2. 带重试的请求
     req = _build_request(url)
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                _api_cache.set(url, data)
+                return data
+        except urllib.error.HTTPError as e:
+            last_exc = e
+            if e.code == 429 and attempt < max_retries:
+                sleep_sec = 2 ** attempt  # 1, 2, 4
+                print(f"[paper_search] ⚠️ S2 API 429，第 {attempt + 1}/{max_retries} 次重试，等待 {sleep_sec}s...")
+                time.sleep(sleep_sec)
+                continue
+            raise
+        except Exception:
+            raise
+
+    raise last_exc or RuntimeError("S2 API 请求失败（未知错误）")
 
 
 def _safe_params(params: dict) -> str:

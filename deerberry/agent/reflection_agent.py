@@ -30,23 +30,31 @@ from deerberry.base.simple_agent import SimpleAgent
 from deerberry.pipeline.chatroom_controller import ThoughtEvent, InterventionEvent
 
 
+
+### 中间汇报（Midway Intervention）配置
+# 动态阈值基础值（秒）
+MIDWAY_BASE_THRESHOLD = float(5.0)
+# 动态阈值上限（秒）
+MIDWAY_MAX_THRESHOLD = float(30.0)
+# 阈值随前台回复长度增长的系数（每字符增加的秒数）
+MIDWAY_THRESHOLD_FACTOR = float(0.1)
+
 class ReflectionAgent(SimpleAgent):
     """反思智能体（Meta-Cognitive Controller / 审判官）。
     基于 SimpleAgent 实现：单步 LLM 调用，无 ReAct 循环，快速完成判断。
     """
 
     DEFAULT_SYS_PROMPT = \
-"""你是智能体集群的任务编排器，你的职责是判断后台思考智能体(Brain Agent)完成深度思考后，其深度思考的结果是否有需要告知给用户。
+"""你是智能体集群的任务编排器，你的职责是判断后台思考智能体(Brain Agent)完成深度思考后，其深度思考的结果结合最近上下文智能体的回答中，是否还有需要告知给用户。
 
-输入信息：
-1. 用户的对话内容
-2. 对话智能体(Chat Agent)已经给出的回复
-3. 后台思考智能体(Brain Agent)的深度思考结果（可能包含工具查询到的数据）
+判断信息：
+1. 与用户的历史对话内容
+2. 后台思考智能体(Brain Agent)的最新的深度思考结果
 
 判断规则：
-- summarize: Brain Agent 提供了 Chat Agent 没有提到的新事实/数据/结论，需要总结告知用户
-- clarify: Brain Agent 发现对话中用户可能存在信息缺失或智能体理解模糊，需要请求 Chat Agent 响应向用户追问澄清
-- ignore: Chat Agent 已经正确完整地回答了用户，Brain Agent 的结果只是重复或补充说明，则不需要再次响应 Chat Agent，避免打扰用户或出现重复回答
+- summarize: Brain Agent 在最近上下文的背景下，新的结论提供了没有提到的新事实/数据/结论，需要总结告知用户
+- clarify: Brain Agent 发现最近上下文对话中，用户可能存在信息缺失或智能体理解模糊，需要请求响应向用户追问澄清
+- ignore: 最近上下文对话历史中，最近一轮对话已经正确解答用户的问题，而 Brain Agent 最新的思考结果只是重复或赘述，则不需要再次响应，避免打扰用户或出现重复回答
 
 你只能输出一个 token 标记，从以下枚举值进行选取: ["summarize", "ignore", "clarify"]
 """
@@ -67,7 +75,31 @@ class ReflectionAgent(SimpleAgent):
         self.chat_history: list[Msg] = []
         self.thought_history: list[ThoughtEvent] = []
 
+    # ── 动态阈值计算（供 midway_watcher 调用）──
+    @staticmethod
+    def compute_dynamic_threshold(chat_result: Optional[Msg]) -> float:
+        """根据前台对话长度计算动态阈值。
 
+        逻辑：
+        - 前台回复越短 → 用户问题越简单 → 容忍时间越短
+        - 前台回复越长 → 用户问题越复杂 → 容忍时间越长
+
+        formula: threshold = BASE + chat_length * FACTOR, capped at MAX
+        """
+        
+        base = MIDWAY_BASE_THRESHOLD
+        max_threshold = MIDWAY_MAX_THRESHOLD
+        factor = MIDWAY_THRESHOLD_FACTOR
+
+        chat_text = chat_result.get_text_content() if chat_result else ""
+        token_count = len(chat_text)  # 简化为字符数，后续可替换为真实 token 数
+
+        threshold = base + token_count * factor
+        threshold = min(threshold, max_threshold)
+        
+        # threshold = float(5.0)
+
+        return threshold
 
     # ── 判断 1：前台完成后（保持规则驱动，轻量快速）──
     # 目前这个判断不知道有什么用，因为后台大脑智能体一直是常驻开着的，前台响应无论是否正常都不影响大脑智能体运行
@@ -113,25 +145,16 @@ class ReflectionAgent(SimpleAgent):
         Returns:
             InterventionEvent，action 可能为 summarize / ignore / clarify
         """
-        chat_text = chat_response.get_text_content() if chat_response else ""
+        chat_response = chat_response.get_text_content() if chat_response else ""
         brain_text = thought.raw_data.get("insight", "") if thought else ""
 
-        # ── 方案 A + C：获取对话历史 ──
-        # 优先使用外部传入的 chat_history，否则从 self.memory 读取（observe 积累）
-        history_msgs = chat_history if chat_history is not None else await self.memory.get_memory()
 
-        # 构造当前审查消息
-        review_content = f"""请根据以下对话内容、已回复内容、思考结果，输出任务编排判断：
-
-【用户本轮对话内容】：
-{user_question}
-
-【对话Chat Agent已回复】：
-{chat_text}
-
-【后台Brain Agent思考结果】：
-{brain_text}
-"""
+        review_content = f"""请根据以下Brain Agent的思考结果，输出本轮任务编排判断：
+【用户最开始提问的问题】：
+{chat_response}
+        
+【Brain Agent思考结果】
+{brain_text}"""
 
         # ── 直接构造完整 prompt（system + 历史 + 当前审查）──
         # 不经过 self.reply()，因为 save_to_memory=False 会导致当前 msg 被丢弃

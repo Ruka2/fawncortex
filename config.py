@@ -47,8 +47,8 @@ LLM_ROLE_GENERATE_KWARGS = {
     "chat": {"extra_body": {"enable_thinking": False}},
     "emotion": {"extra_body": {"enable_thinking": False}},
     "orchestrator": {"extra_body": {"enable_thinking": False}},
-    "brain": {"extra_body": {"enable_thinking": False}},
-    "memory": {"extra_body": {"enable_thinking": False}},
+    "brain": {"extra_body": {"enable_thinking": True}},
+    "memory": {"extra_body": {"enable_thinking": True}},
 }
 
 ### LLM推理细节设置

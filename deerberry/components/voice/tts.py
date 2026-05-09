@@ -143,9 +143,21 @@ class SiliconFlowCosyVoice:
             sd.wait()
             # print("🔊 播放完毕")
 
+    def stop(self) -> None:
+        """停止当前正在播放的音频（用于用户新输入打断）。"""
+        if HAS_AUDIO:
+            try:
+                sd.stop()
+            except Exception as e:
+                print(f"⚠️  停止音频播放失败: {e}")
+
 
 # ==================== 使用示例 ====================
 if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    from typing import Any, Optional
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
     import config
 
     # 流式合成 + 播放 + 保存

@@ -28,20 +28,23 @@ class BrainAgent:
 根据用户的输入和对话历史，分析用户的情绪、意图、隐含需求，并调用合适的工具来完成对话任务。
 
 ### 工具使用
-你可以使用以下工具辅助完成任务：
+你可以使用以下工具帮助你的思考：
 - retrieve_from_memory: 检索与用户相关的历史记忆
 - record_to_memory: 记录重要信息到长期记忆
+- search_papers: 按关键词搜索学术论文
+- read_paper: 根据论文ID获取论文正文文本
+- get_paper_details: 根据论文ID获取论文的摘要、参考文献、被引情况，非正文文本
+- search_authors: 搜索论文学者/作者
+- get_current_time: 获取当前的日期和时间用于实时时间作为推理信息时
 
 ### 输出要求
 在完成所有任务后，将任务结果总结为一段自然语言的文本的答复，使对话生成更自然、更贴合用户需求的回复响应。
 
 回复建议应包含以下内容：
-- 用户当前的情绪和状态分析
-- 用户的真实意图判断
-- 相关的历史记忆提醒（如有）
-- 需要特别注意的信息（如有）
+- 意图判断
+- 相关的历史记忆（如有）
+- 需要注意的信息（如有）
 - 所执行的任务结果
-- 建议的回应策略和语气方向
 
 要求：
 1. 仅只输出自然语言文本，不要输出 JSON、不要输出代码块
@@ -89,10 +92,44 @@ class BrainAgent:
         self._current_iter = 0
         self._iter_results = []
         self._react_start_ts = 0.0
+        # midway 已同步到的 reasoning 轮次指针（用于增量同步）
+        self._last_midway_sync_iter = 0
+
+        # ── 子状态机（阶段1：状态同步）──
+        # 子状态：idle | reasoning | acting
+        self._sub_status: str = "idle"
+        # 最新 reasoning 文本快照（供 midway_watcher 读取）
+        self._latest_reasoning_text: str = ""
+        # 最新调用的工具名
+        self._latest_tool_name: str = ""
+        # 本轮是否调用过任何工具
+        self._has_used_tools: bool = False
+        # think() 开始时间戳
+        self._think_start_ts: float = 0.0
+
+        # ── 流式截取缓冲区（阶段1：流式截取）──
+        self._stream_buffer: str = ""
+        self._is_streaming_reasoning: bool = False
+        # midway 已同步到的流式内容长度指针（用于增量同步，方案B）
+        self._last_stream_sync_len: int = 0
+
+        # ── Hook 注册 ──
 
         # 闭包 wrapper：避免 bound-method 的 double-self 问题
+
+        async def _hook_pre_reasoning(react_self, kwargs):
+            """在 _reasoning() 前标记 stream 开始，更新子状态。"""
+            try:
+                self._is_streaming_reasoning = True
+                self._stream_buffer = ""
+                self._last_stream_sync_len = 0  # 新一轮 reasoning，重置增量指针
+                self._sub_status = "reasoning"
+            except Exception as e:
+                print(f"[BrainAgent] ⚠️ pre_reasoning hook 异常（已吞）: {e}")
+            return kwargs  # pre_hook 必须返回 kwargs（或 None）
+
         async def _hook_post_reasoning(react_self, kwargs, output):
-            """在 _reasoning() 后记录本轮 reasoning 信息。"""
+            """在 _reasoning() 后记录本轮 reasoning 信息，更新子状态。"""
             try:
                 self._current_iter += 1
                 text = ""
@@ -106,6 +143,16 @@ class BrainAgent:
                                 "name": block.get("name", "unknown"),
                                 "input": block.get("input", {}),
                             })
+
+                # 更新最新 reasoning 文本
+                self._latest_reasoning_text = text
+
+                # 如果有 tool_use，子状态转为 acting；否则本轮结束，回到 idle
+                if tool_uses:
+                    self._sub_status = "acting"
+                    self._has_used_tools = True
+                else:
+                    self._sub_status = "idle"
 
                 self._iter_results.append({
                     "iter": self._current_iter,
@@ -124,7 +171,7 @@ class BrainAgent:
             return output  # 必须原样返回，否则 ReActAgent 会丢失后续流程
 
         async def _hook_post_acting(react_self, kwargs, output):
-            """在 _acting() 后记录本轮 acting 信息。"""
+            """在 _acting() 后记录本轮 acting 信息，更新子状态。"""
             try:
                 tool_call = kwargs.get("tool_call", {})
                 tool_name = "unknown"
@@ -137,6 +184,8 @@ class BrainAgent:
                     if hasattr(tool_call, "input"):
                         tool_input = getattr(tool_call, "input", {})
 
+                self._latest_tool_name = tool_name
+
                 if self._iter_results:
                     self._iter_results[-1]["acting"] = {
                         "tool_name": tool_name,
@@ -147,10 +196,106 @@ class BrainAgent:
                         f"[BrainAgent] 🔧 第 {self._current_iter} 轮 acting 完成"
                         f"（tool={tool_name}）"
                     )
+
+                # acting 完成后，子状态回到 idle（等待下一轮 reasoning）
+                self._sub_status = "idle"
             except Exception as e:
                 print(f"[BrainAgent] ⚠️ post_acting hook 异常（已吞）: {e}")
             return output  # 必须原样返回
 
+        # 【关键修复】AgentScope 的 _ReActAgentMeta metaclass 只会在当前类的 attrs
+        # 中查找 _reasoning/_acting 进行 hook 包装。但 ReActAgent 的这两个方法实际
+        # 定义在父类 ReActAgentBase 中，导致 hook 永远不会触发。
+        # 因此这里采用 monkey-patch 直接包装，绕过 metaclass 缺陷。
+        agent = self.agent
+
+        # 包装 _reasoning：注入 pre + post 逻辑
+        _original_reasoning = agent._reasoning
+
+        async def _wrapped_reasoning(*args, **kwargs):
+            # pre-reasoning
+            self._is_streaming_reasoning = True
+            self._stream_buffer = ""
+            self._last_stream_sync_len = 0
+            self._sub_status = "reasoning"
+            # 调用原始方法
+            output = await _original_reasoning(*args, **kwargs)
+            # post-reasoning（内联原 _hook_post_reasoning 逻辑）
+            try:
+                self._current_iter += 1
+                text = ""
+                tool_uses = []
+                if hasattr(output, "get_text_content"):
+                    text = output.get_text_content() or ""
+                if hasattr(output, "get_content_blocks"):
+                    for block in output.get_content_blocks("tool_use"):
+                        if isinstance(block, dict):
+                            tool_uses.append({
+                                "name": block.get("name", "unknown"),
+                                "input": block.get("input", {}),
+                            })
+                self._latest_reasoning_text = text
+                if tool_uses:
+                    self._sub_status = "acting"
+                    self._has_used_tools = True
+                else:
+                    self._sub_status = "idle"
+                self._iter_results.append({
+                    "iter": self._current_iter,
+                    "reasoning_text": text,
+                    "tool_calls": tool_uses,
+                    "timestamp": datetime.now().isoformat(),
+                    "acting": None,
+                })
+                print(
+                    f"[BrainAgent] 🔄 第 {self._current_iter} 轮 reasoning 完成"
+                    f"（tool_calls={len(tool_uses)}）"
+                )
+            except Exception as e:
+                print(f"[BrainAgent] ⚠️ post_reasoning 包装异常（已吞）: {e}")
+            return output
+
+        agent._reasoning = _wrapped_reasoning
+
+        # 包装 _acting：注入 post 逻辑
+        _original_acting = agent._acting
+
+        async def _wrapped_acting(*args, **kwargs):
+            output = await _original_acting(*args, **kwargs)
+            # post-acting（内联原 _hook_post_acting 逻辑）
+            try:
+                tool_call = kwargs.get("tool_call", {})
+                tool_name = "unknown"
+                tool_input = {}
+                if isinstance(tool_call, dict):
+                    tool_name = tool_call.get("name", "unknown")
+                    tool_input = tool_call.get("input", {})
+                elif hasattr(tool_call, "name"):
+                    tool_name = getattr(tool_call, "name", "unknown")
+                    if hasattr(tool_call, "input"):
+                        tool_input = getattr(tool_call, "input", {})
+                self._latest_tool_name = tool_name
+                if self._iter_results:
+                    self._iter_results[-1]["acting"] = {
+                        "tool_name": tool_name,
+                        "tool_input": tool_input,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    print(
+                        f"[BrainAgent] 🔧 第 {self._current_iter} 轮 acting 完成"
+                        f"（tool={tool_name}）"
+                    )
+                self._sub_status = "idle"
+            except Exception as e:
+                print(f"[BrainAgent] ⚠️ post_acting 包装异常（已吞）: {e}")
+            return output
+
+        agent._acting = _wrapped_acting
+
+        # 保留 register_instance_hook 调用（ harmless，但已不生效）
+        self.agent.register_instance_hook(
+            "pre_reasoning", "brain_stream_start", _hook_pre_reasoning
+        )
         self.agent.register_instance_hook(
             "post_reasoning", "brain_track_reasoning", _hook_post_reasoning
         )
@@ -158,12 +303,131 @@ class BrainAgent:
             "post_acting", "brain_track_acting", _hook_post_acting
         )
 
+        # ── Patch print() 方法实现流式截取 ──
+        # _reasoning() 的 stream 循环每次 token 都会调用 self.print()
+        # print() 内部有 await asyncio.sleep(0)，会 yield 控制权给事件循环
+        # 我们通过 patch print() 在 stream 过程中实时捕获 _stream_buffer
+        original_print = self.agent.print
+
+        async def patched_print(msg, last=True, speech=None):
+            """Patch print 方法，在 reasoning stream 过程中实时捕获文本。"""
+            try:
+                if self._is_streaming_reasoning:
+                    text = msg.get_text_content() or ""
+                    self._stream_buffer = text
+            except Exception as e:
+                print(f"[BrainAgent] ⚠️ patched_print 异常（已吞）: {e}")
+            # 调用原始 print（保持原有行为：msg_queue + console 输出）
+            await original_print(msg, last, speech)
+
+        self.agent.print = patched_print
+
+    # ── 状态机公共接口 ──
+    def get_current_sub_status(self) -> str:
+        """获取当前子状态（idle | reasoning | acting）。"""
+        return self._sub_status
+
+    def has_used_tools(self) -> bool:
+        """本轮是否调用过任何工具。"""
+        return self._has_used_tools
+
+    def get_stream_buffer(self) -> str:
+        """获取当前流式生成中的最新文本（供 midway_watcher 定时轮询）。"""
+        return self._stream_buffer
+
+    def get_stream_buffer_delta(self) -> str:
+        """获取自上次 midway 同步以来新增的流式内容（增量，方案B）。
+
+        配合 mark_stream_synced() 使用，确保每次 midway 只追加新增部分，
+        避免完整快照导致的重复累积。
+        """
+        current = self._stream_buffer
+        last = self._last_stream_sync_len
+        if len(current) > last:
+            return current[last:]
+        return ""
+
+    def mark_stream_synced(self) -> None:
+        """标记当前流式内容已同步到 chat_agent，更新增量指针。"""
+        self._last_stream_sync_len = len(self._stream_buffer)
+
+    def get_latest_reasoning(self) -> str:
+        """获取最新一轮 reasoning 的完整文本。"""
+        return self._latest_reasoning_text
+
+    def get_new_reasonings_since_last_sync(self) -> str:
+        """获取上次 midway 同步后新增的 reasoning 内容（增量）。
+
+        每次 midway 触发时，只返回 _last_midway_sync_iter 之后完成的 reasoning。
+        返回空字符串表示没有新增内容。
+        """
+        parts = []
+        for it in self._iter_results:
+            if it["iter"] > self._last_midway_sync_iter:
+                text = it.get("reasoning_text", "")
+                if text and text.strip():
+                    # parts.append(f"【第 {it['iter']} 轮思考】\n{text.strip()}")
+                    parts.append(f"{text.strip()}")
+        return "\n\n".join(parts)
+
+    def mark_midway_synced(self) -> None:
+        """标记当前所有 reasoning 已同步到 chat_agent。"""
+        self._last_midway_sync_iter = self._current_iter
+
+    def get_latest_tool_name(self) -> str:
+        """获取最新调用的工具名。"""
+        return self._latest_tool_name
+
+    def get_total_reasoning_length(self) -> int:
+        """获取当前已产生的 reasoning 内容总长度（字符数）。
+
+        用于 midway_watcher 判断 brain 是否产生了足够实质性的内容，
+        防止网络波动或空 reasoning 导致的无效 midway 触发。
+
+        计算范围包括：
+        1. 所有已完成 reasoning 轮次的文本
+        2. 当前正在进行中的流式输出文本
+        """
+        total = 0
+        # 1. 已完成的 reasoning 轮次
+        for it in self._iter_results:
+            text = it.get("reasoning_text", "")
+            if text:
+                total += len(text)
+        # 2. 当前流式输出（如果有）
+        total += len(self._stream_buffer)
+        return total
+
+    def _build_status_suffix(self) -> str:
+        """构建状态摘要字符串，可追加到中间汇报内容尾部。
+
+        Returns:
+            如 "正在调用 search_papers 工具中，请稍候..."
+        """
+        if self._sub_status == "reasoning":
+            return f"\n不过后续我还正在思考中..."
+        elif self._sub_status == "acting":
+            return f"\n不过后续我还在调用工具，正在等待工具给我返回结果..."
+        return ""
+
     # ── 追踪器公共接口 ──
     def reset_react_tracker(self):
         """重置 ReAct 轮次追踪器。"""
         self._current_iter = 0
         self._iter_results = []
         self._react_start_ts = 0.0
+        # 重置 midway 同步指针
+        self._last_midway_sync_iter = 0
+        # 重置子状态机
+        self._sub_status = "idle"
+        self._latest_reasoning_text = ""
+        self._latest_tool_name = ""
+        self._has_used_tools = False
+        self._think_start_ts = 0.0
+        # 重置流式截取缓冲区
+        self._stream_buffer = ""
+        self._is_streaming_reasoning = False
+        self._last_stream_sync_len = 0
 
     def get_react_snapshot(self) -> dict:
         """获取当前 ReAct 循环的快照。
@@ -172,6 +436,11 @@ class BrainAgent:
             {
                 "total_iters": int,
                 "elapsed_sec": float,
+                "sub_status": str,
+                "has_used_tools": bool,
+                "latest_reasoning": str,
+                "latest_tool_name": str,
+                "stream_buffer": str,
                 "iterations": list[dict],
             }
         """
@@ -179,6 +448,11 @@ class BrainAgent:
         return {
             "total_iters": self._current_iter,
             "elapsed_sec": round(elapsed, 2),
+            "sub_status": self._sub_status,
+            "has_used_tools": self._has_used_tools,
+            "latest_reasoning": self._latest_reasoning_text,
+            "latest_tool_name": self._latest_tool_name,
+            "stream_buffer": self._stream_buffer,
             "iterations": self._iter_results.copy(),
         }
 
@@ -207,6 +481,7 @@ class BrainAgent:
 
         self.reset_react_tracker()
         self._react_start_ts = time.time()
+        self._think_start_ts = time.time()
 
         result = await self.agent.reply(user_msg)
         text = result.get_text_content()

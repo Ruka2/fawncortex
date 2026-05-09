@@ -47,22 +47,16 @@ from deerberry.base.simple_agent import SimpleAgent
 # """
 
 
-DEFAULT_CHAT_PROMPT = """你是一个虚拟主播，现在你正在直播中且你正在与观众进行互动，请为观众(用户)的回答进行回复。
+DEFAULT_CHAT_PROMPT = """你是一个负责对话的智能体，请你响应用户的对话。
 
-### 任务
-在直播间中需要与观众进行互动对话，请你站在你的你的人物属性进行回答和响应。
-因为你的观众可能很多，因此请你多注重上下文聊天记录的话题继承，保持话题不间断。
-如果是复杂的问题，则代表你目前无法解决，现已经有其他智能体为你进行思考，若出现复杂问题时向观众请求稍等片刻。
-
-### 人物属性
-姓名：Ruka
-年龄：18岁
+### 任务贴士
+请你更关注与对话历史的上下文，当前你与用户的场景是边交流和边思考的情况，因此你的思考逻辑可能会中断，中断的上下文需要多注意组织通顺的对话内容。
+聊天时，若上下文已经提及的内容请不要重复赘述，请跟随话题持续保持话题正常进行，不要反问用户。
 
 ### 回复格式
 回复格式只需要单行文本内容（无换行）。
-根据用户对话内容复杂度动态调整回复内容长度，简单问题简短回答即可，复杂问题请稍微充分描述但总体不超过100字。
-回复口吻预期需要配合TTS语音合成来做语音朗读，适当使用语气词，且不要使用符号和表情，只保留基础标点符号。
-"""
+根据用户对话内容难度调整回复内容长度，例如简单闲聊简短回答、复杂问题可适当充分描述（字数不超过40字）。
+回复口吻预期需要配合TTS语音合成来做语音朗读，且不要使用复杂符号和表情，只保留使用基础标点符号。"""
 
 class ChatAgent(SimpleAgent):
     """前台对话智能体。"""
@@ -85,39 +79,3 @@ class ChatAgent(SimpleAgent):
             formatter=formatter or OpenAIChatFormatter(),
         )
 
-
-
-    # 【核心】与大脑智能体的联动
-    # def inject_context(self, context: dict[str, Any] | None) -> None:
-    #     """将外部洞察上下文注入到 system prompt 中。
-
-    #     支持两种模式：
-    #     1. brain_insight: 大脑智能体输出的自然语言洞察文本（推荐）
-    #     2. 结构化字段: 向后兼容旧版的 user_profile/user_intent 等字段
-
-    #     每次调用时会自动刷新 system prompt 中的现实时间为最新时间。
-
-    #     Args:
-    #         context: 若为 None 或空字典则清空注入，恢复基础 prompt。
-    #     """
-        
-    #     if not context:
-    #         self.sys_prompt = self._base_prompt
-
-    #     # 模式 1：优先使用 brain_insight（自然语言洞察文本）
-    #     brain_insight = context.get("brain_insight", "")
-    #     if brain_insight:
-    #         self.sys_prompt = (
-    #             f"{self._base_prompt}\n\n"
-    #             f"### 认知洞察（由大脑智能体提供）\n"
-    #             f"{brain_insight}\n\n"
-    #             f"请你自然地结合以上洞察信息，以你的口吻回复用户。不要让用户感觉到你在转述分析结果。"
-    #         )
-    #     else:
-    #         self.sys_prompt = self._base_prompt
-            
-    #     return
-
-    # def reset_prompt(self) -> None:
-    #     """恢复为基础 system prompt。"""
-    #     self.sys_prompt = self._base_prompt
