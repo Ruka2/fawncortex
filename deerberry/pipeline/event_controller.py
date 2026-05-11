@@ -22,7 +22,6 @@ from typing import Any, Optional
 from collections import defaultdict
 
 from agentscope.message import Msg
-from agentscope.model import OpenAIChatModel
 
 
 # =============================================================================

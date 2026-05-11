@@ -16,7 +16,7 @@ System 1 极速响应轨道的统一封装。
 
 import asyncio
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 from agentscope.message import Msg
 

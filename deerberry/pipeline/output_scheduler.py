@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from agentscope.message import Msg
-
 from deerberry.components.voice.tts import SiliconFlowCosyVoice
 from deerberry.tools.control_vts import express_emotion
 from typing import TYPE_CHECKING

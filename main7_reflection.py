@@ -45,6 +45,7 @@ from agentscope.tool import Toolkit
 from deerberry.agent.chat_agent import ChatAgent
 from deerberry.agent.emotion_agent import EmotionAgent
 from deerberry.agent.brain_agent import BrainAgent
+from deerberry.agent.reflection_agent import ReflectionAgent
 
 # 自定义智能体记忆的实例类
 from deerberry.base.memory import create_long_term_memory
@@ -65,20 +66,22 @@ from deerberry.tools.get_current_time import get_current_time
 
 # 外部非智能体执行工具
 from deerberry.components.voice.tts import SiliconFlowCosyVoice
-from deerberry.pipeline.output_scheduler import OutputScheduler, Priority
+from deerberry.pipeline.output_scheduler import OutputScheduler
 
 # 日志打印代码
 from deerberry.logger.latency_tracker import LatencyTracker
 from deerberry.logger.logger import enable_file_logging
 
-# 【基础设施】聊天室控制器
-from deerberry.pipeline.chatroom_controller import (
+# 分布式控制器
+from deerberry.pipeline.event_controller import (
     EventBus,
     BackgroundBrainAgent,
     UserInputEvent
 )
+
+# 分布式管线控制
+from deerberry.pipeline.back_stage_midway import midway_watcher, brain_summary
 from deerberry.pipeline.front_stage_pipeline import FrontStagePipeline
-from deerberry.agent.reflection_agent import ReflectionAgent
 
 
 # 基础用户配置
@@ -111,93 +114,9 @@ def build_model_for_role(role: str, stream: bool = True) -> OpenAIChatModel:
 
 
 
-from deerberry.pipeline.back_stage_midway import midway_watcher
 
 
 
-
-async def _trigger_brain_summary(
-    chat_agent: ChatAgent,
-    scheduler: OutputScheduler,
-    reflection_agent: ReflectionAgent,
-    current_emotion: str,
-    user_input: str,
-    summary_thought: str,
-    source_label: str = "brain_summary",
-    user_name: str = "用户",
-) -> None:
-    """基于 brain 的思考结果触发 ChatAgent 生成总结并调度输出。
-
-    被 "completed" 状态和 "timeout" 状态共用，避免代码重复。
-    """
-    if not summary_thought or not summary_thought.strip():
-        print(f"[BrainSummary] ⚠️ 思考内容为空，跳过总结触发")
-        return
-
-    trigger_msg_1 = Msg(
-        name=user_name,
-        content="[系统提示]\t请你总结思考",
-        role="user",
-    )
-    await chat_agent.memory.add(trigger_msg_1)
-
-    insight_msg = Msg(
-        name="assistant",
-        content=f"{summary_thought.strip()}",
-        role="assistant",
-    )
-    await chat_agent.memory.add(insight_msg)
-
-    trigger_msg_2 = Msg(
-        name=user_name,
-        content="[系统提示]\t你上轮思考的总结请说给用户",
-        role="user",
-    )
-
-    # 【临时上下文清理】只保留最新的系统提示，删除其余旧的
-    _memory = await chat_agent.memory.get_memory()
-    _sys_msgs = [
-        _m for _m in _memory
-        if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
-    ]
-    if len(_sys_msgs) > 1:
-        _to_delete = _sys_msgs[:-1]
-        _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
-        print(f"[Memory] 🗑️ summary 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
-
-    summary_msg = await chat_agent.reply(trigger_msg_2)
-
-    summary_text = summary_msg.get_text_content() or ""
-    chat_history = await chat_agent.memory.get_memory()
-
-    intervention = await reflection_agent.judge_each_chat(
-        user_input=user_input,
-        agent_response=summary_text,
-        chat_history=chat_history,
-    )
-
-    action_label = intervention.action
-    print(f"💬 [{action_label}] {summary_text}")
-
-    # ── ReflectionAgent 判决后的输出调度 ──
-    if action_label in ("summarize", "clarify"):
-        await scheduler.schedule(
-            summary_text,
-            current_emotion,
-            source_label,
-        )
-        
-    # elif action_label in ("ignore", "repeat"):
-    #     print(f"[Reflection] ⏭️ 回答被忽略（action=ignore），不进入输出调度器")
-        
-    elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
-        deleted_count = await chat_agent.memory.delete(
-            msg_ids=[trigger_msg_2.id, summary_msg.id]
-        )
-        print(f"[Reflection] 🗑️ 严重错误（action=fatal_error），已从 memory 删除 {deleted_count} 条消息")
-        
-    else:
-        print(f"[Reflection] ⚠️ 未知 action='{action_label}'，默认不进入输出调度器")
 
 # =============================================================================
 # 【基础设施】主函数
@@ -242,14 +161,14 @@ async def main() -> None:
     chat_model = build_model_for_role("chat", stream=config.STREAM)
     emotion_model = build_model_for_role("emotion", stream=config.STREAM)
     brain_model = build_model_for_role("brain", stream=config.STREAM)
-    reflection_model = build_model_for_role("orchestrator", stream=config.STREAM)
+    reflection_model = build_model_for_role("reflection", stream=config.STREAM)
 
     print("[init] 多角色 LLM 配置映射:")
     for role, model in [
         ("chat", chat_model),
         ("emotion", emotion_model),
         ("brain", brain_model),
-        ("orchestrator(reflection)", reflection_model),
+        ("reflection", reflection_model),
     ]:
         cfg = config.LLM_ROLE_CONFIG.get(role.replace("(reflection)", ""), {})
         used_model = cfg.get("model_name") or config.LLM_MODEL_NAME
@@ -381,9 +300,8 @@ async def main() -> None:
                 )
 
                 # ── 6.5 等待 BrainAgent 思考结果（带超时，非阻塞前台）──
-                BRAIN_TIMEOUT = 60.0  # 秒，建议后续根据问题复杂度动态调整
+                BRAIN_TIMEOUT = 60.0  # 秒，深度思考，前台没有响应后最大容许大脑智能体的时间，建议后续根据问题复杂度动态调整
                 try:
-                    # FIXME: 深度思考（前台没有响应后最大容许大脑智能体的时间），这个地方需要调整 因为不知道有什么用
                     brain_output = await asyncio.wait_for(
                         brain_bg.output_queue.get(),
                         timeout=BRAIN_TIMEOUT,
@@ -409,7 +327,7 @@ async def main() -> None:
                         thought = brain_output["thought"]
                         summary_thought = thought.raw_data.get("insight", "")
 
-                        await _trigger_brain_summary(
+                        await brain_summary(
                             chat_agent=chat_agent,
                             scheduler=scheduler,
                             reflection_agent=reflection_agent,
@@ -453,7 +371,7 @@ async def main() -> None:
 
                     # 触发最后一次总结（若还有可用内容）
                     if summary_thought.strip():
-                        await _trigger_brain_summary(
+                        await brain_summary(
                             chat_agent=chat_agent,
                             scheduler=scheduler,
                             reflection_agent=reflection_agent,

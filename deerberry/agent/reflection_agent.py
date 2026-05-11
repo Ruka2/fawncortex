@@ -18,7 +18,6 @@
    - none      : 不干预
 """
 
-import json
 from typing import List, Optional
 
 from agentscope.message import Msg
@@ -27,7 +26,7 @@ from agentscope.memory import InMemoryMemory
 from agentscope.formatter import OpenAIChatFormatter
 
 from deerberry.base.simple_agent import SimpleAgent
-from deerberry.pipeline.chatroom_controller import ThoughtEvent, InterventionEvent
+from deerberry.pipeline.event_controller import ThoughtEvent, InterventionEvent
 
 
 
@@ -174,24 +173,3 @@ class ReflectionAgent(SimpleAgent):
                 action="ignore",
                 target="",
             )
-    
-    
-    
-    
-            
-
-    # ── 判断 3：Brain 思考超时（规则驱动）──
-    async def judge_timeout(
-        self,
-        brain_status: str,
-        timeout_limit: float,
-        elapsed: float,
-    ) -> InterventionEvent:
-        """Brain 思考超时的兜底判断。"""
-        if brain_status == "thinking" and elapsed > timeout_limit:
-            return InterventionEvent(
-                action="stop_brain",
-                target="BrainAgent",
-                payload=f"思考超时（>{timeout_limit}s），强制终止",
-            )
-        return InterventionEvent(action="none", target="")

@@ -16,13 +16,12 @@
 
 import asyncio
 import time
-from typing import Optional
 
 from agentscope.message import Msg
 
 from deerberry.agent.chat_agent import ChatAgent
 from deerberry.agent.reflection_agent import ReflectionAgent
-from deerberry.pipeline.chatroom_controller import BackgroundBrainAgent
+from deerberry.pipeline.event_controller import BackgroundBrainAgent
 from deerberry.pipeline.output_scheduler import OutputScheduler
 
 
@@ -112,6 +111,7 @@ async def midway_watcher(
 
         try:
 
+            # FIXME: 后续要考虑是否还需要保留，因为目前好像会将第一次的大脑思考就载入进去
             # new_reasoning = brain_bg.brain.get_new_reasonings_since_last_sync()
             # if new_reasoning:
             #     await chat_agent.memory.add(
@@ -185,12 +185,13 @@ async def midway_watcher(
             action_label = intervention.action
             print(f"💬 [Midway Reflection] {action_label}")
 
-            # 3. TTS 播报中间汇报（使用原始文本，不带时间戳）
+            # 3. TTS 播报中间汇报（使用原始文本）
             # 【关键】midway 语音可以被用户下一轮输入打断，因为 scheduler.interrupt()
-            # 会在用户新输入时调用 tts.stop() + 清空队列
             if action_label in ("summarize", "clarify"):
                 await scheduler.schedule(midway_text, emotion, "midway")
 
+                # FIXME: 目前大脑智能体的思考模式还算正常，是否需要将已对话内容回灌到大脑智能体的上下文需要考虑
+                # 因为目前实际上是chat_agent不停的去复制粘贴brain_agent的信息到自己memory中，也就是chat_agent的输出是完成跟着大脑智能体的，所以目前还不太需要考虑需要回灌信息
                 # observe 回灌到 BrainAgent（assistant 角色）
                 # observe_msg = Msg(
                 #     name="brain_center",
@@ -217,3 +218,88 @@ async def midway_watcher(
             print(f"[Midway] ❌ 中间思考过程汇报失败: {e}")
             import traceback
             traceback.print_exc()
+
+
+async def brain_summary(
+    chat_agent: ChatAgent,
+    scheduler: OutputScheduler,
+    reflection_agent: ReflectionAgent,
+    current_emotion: str,
+    user_input: str,
+    summary_thought: str,
+    source_label: str = "brain_summary",
+    user_name: str = "用户",
+) -> None:
+    """基于 brain 的思考结果触发 ChatAgent 生成总结并调度输出。
+
+    被 "completed" 状态和 "timeout" 状态共用，避免代码重复。
+    """
+    if not summary_thought or not summary_thought.strip():
+        print(f"[BrainSummary] ⚠️ 思考内容为空，跳过总结触发")
+        return
+
+    trigger_msg_1 = Msg(
+        name=user_name,
+        content="[系统提示]\t请你总结思考",
+        role="user",
+    )
+    await chat_agent.memory.add(trigger_msg_1)
+
+    insight_msg = Msg(
+        name="assistant",
+        content=f"{summary_thought.strip()}",
+        role="assistant",
+    )
+    await chat_agent.memory.add(insight_msg)
+
+    trigger_msg_2 = Msg(
+        name=user_name,
+        content="[系统提示]\t你上轮思考的总结请说给用户",
+        role="user",
+    )
+
+    # 【临时上下文清理】只保留最新的系统提示，删除其余旧的
+    _memory = await chat_agent.memory.get_memory()
+    _sys_msgs = [
+        _m for _m in _memory
+        if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
+    ]
+    if len(_sys_msgs) > 1:
+        _to_delete = _sys_msgs[:-1]
+        _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
+        print(f"[Memory] 🗑️ summary 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
+
+    summary_msg = await chat_agent.reply(trigger_msg_2)
+
+    summary_text = summary_msg.get_text_content() or ""
+    chat_history = await chat_agent.memory.get_memory()
+
+    intervention = await reflection_agent.judge_each_chat(
+        user_input=user_input,
+        agent_response=summary_text,
+        chat_history=chat_history,
+    )
+
+    action_label = intervention.action
+    print(f"💬 [{action_label}] {summary_text}")
+
+    # ── ReflectionAgent 判决后的输出调度 ──
+    if action_label in ("summarize", "clarify"):
+        await scheduler.schedule(
+            summary_text,
+            current_emotion,
+            source_label,
+        )
+        
+    # elif action_label in ("ignore", "repeat"):
+    #     print(f"[Reflection] ⏭️ 回答被忽略（action=ignore），不进入输出调度器")
+        
+    elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
+        deleted_count = await chat_agent.memory.delete(
+            msg_ids=[trigger_msg_2.id, summary_msg.id]
+        )
+        print(f"[Reflection] 🗑️ 严重错误（action=fatal_error），已从 memory 删除 {deleted_count} 条消息")
+        
+    else:
+        print(f"[Reflection] ⚠️ 未知 action='{action_label}'，默认不进入输出调度器")
+

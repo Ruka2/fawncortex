@@ -9,7 +9,7 @@
 - 简洁的单步调用，极速响应
 """
 
-from typing import Optional, Any
+from typing import Optional
 
 from agentscope.model import OpenAIChatModel
 from agentscope.memory import MemoryBase, InMemoryMemory
