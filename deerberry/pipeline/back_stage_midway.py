@@ -199,7 +199,7 @@ async def midway_watcher(
                 # )
                 # await brain_bg.brain.agent.observe(observe_msg)
                 
-            elif action_label in ("ignore", "repeat", "fatal_error"):
+            elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
                 deleted_count = await chat_agent.memory.delete(
                     msg_ids=[trigger_msg.id, midway_msg.id]
                 )

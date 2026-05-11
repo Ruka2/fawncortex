@@ -190,7 +190,7 @@ async def _trigger_brain_summary(
     # elif action_label in ("ignore", "repeat"):
     #     print(f"[Reflection] ⏭️ 回答被忽略（action=ignore），不进入输出调度器")
         
-    elif action_label in ("ignore", "repeat", "fatal_error"):
+    elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
         deleted_count = await chat_agent.memory.delete(
             msg_ids=[trigger_msg_2.id, summary_msg.id]
         )
