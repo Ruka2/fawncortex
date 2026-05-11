@@ -153,6 +153,18 @@ async def _trigger_brain_summary(
         content="[系统提示]\t你上轮思考的总结请说给用户",
         role="user",
     )
+
+    # 【临时上下文清理】只保留最新的系统提示，删除其余旧的
+    _memory = await chat_agent.memory.get_memory()
+    _sys_msgs = [
+        _m for _m in _memory
+        if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
+    ]
+    if len(_sys_msgs) > 1:
+        _to_delete = _sys_msgs[:-1]
+        _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
+        print(f"[Memory] 🗑️ summary 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
+
     summary_msg = await chat_agent.reply(trigger_msg_2)
 
     summary_text = summary_msg.get_text_content() or ""
@@ -412,6 +424,18 @@ async def main() -> None:
                 except asyncio.TimeoutError:
                     print(f"[Reflection] ⏱ BrainAgent 思考超时（>{BRAIN_TIMEOUT}s），触发最后一次总结")
 
+                    # ── 1. 先停止 midway_watcher，确保所有 midway 都已入队后再触发 summary ──
+                    if current_stop_event:
+                        current_stop_event.set()
+                    if current_midway_task and not current_midway_task.done():
+                        current_midway_task.cancel()
+                        try:
+                            await current_midway_task
+                        except asyncio.CancelledError:
+                            pass
+                    current_midway_task = None
+                    current_stop_event = None
+
                     # 先获取 brain 当前已产生的思考内容（取消前快照）
                     snapshot = brain_bg.brain.get_react_snapshot()
                     parts = []
@@ -441,18 +465,6 @@ async def main() -> None:
                         )
                     else:
                         print("[BrainSummary] ⚠️ 超时后无可用思考内容，跳过总结")
-
-                    # 超时后也需要停止 midway_watcher
-                    if current_stop_event:
-                        current_stop_event.set()
-                    if current_midway_task and not current_midway_task.done():
-                        current_midway_task.cancel()
-                        try:
-                            await current_midway_task
-                        except asyncio.CancelledError:
-                            pass
-                    current_midway_task = None
-                    current_stop_event = None
 
                 # ── 6.7 本轮统计 ──
                 round_elapsed = time.perf_counter() - round_start

@@ -159,6 +159,17 @@ async def midway_watcher(
                 role="user",
             )
 
+            # 【临时上下文清理】只保留最新的系统提示，删除其余旧的
+            _memory = await chat_agent.memory.get_memory()
+            _sys_msgs = [
+                _m for _m in _memory
+                if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
+            ]
+            if len(_sys_msgs) > 1:
+                _to_delete = _sys_msgs[:-1]
+                _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
+                print(f"[Memory] 🗑️ midway 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
+
             midway_msg = await chat_agent.reply(trigger_msg)
 
             midway_text = midway_msg.get_text_content() or ""
@@ -181,12 +192,12 @@ async def midway_watcher(
                 await scheduler.schedule(midway_text, emotion, "midway")
 
                 # observe 回灌到 BrainAgent（assistant 角色）
-                observe_msg = Msg(
-                    name="brain_center",
-                    content=f"已回复用户：{midway_text}",
-                    role="assistant",
-                )
-                await brain_bg.brain.agent.observe(observe_msg)
+                # observe_msg = Msg(
+                #     name="brain_center",
+                #     content=f"已回复用户：{midway_text}",
+                #     role="assistant",
+                # )
+                # await brain_bg.brain.agent.observe(observe_msg)
                 
             elif action_label in ("ignore", "repeat", "fatal_error"):
                 deleted_count = await chat_agent.memory.delete(
@@ -198,6 +209,8 @@ async def midway_watcher(
                 print(f"[Midway Reflection] ⚠️ 未知 action='{action_label}'，默认不进入输出调度器")
 
             intervention_count += 1
+            # 重置计时器，控制 midway 触发频率，避免连续触发
+            start_ts = time.perf_counter()
             print(f"[Midway] ✅ 中间思考过程汇报完成（第 {intervention_count}/{MAX_MIDWAY_INTERVENTIONS} 次）")
 
         except Exception as e:
