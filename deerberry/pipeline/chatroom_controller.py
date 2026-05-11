@@ -64,7 +64,6 @@ class InterventionEvent:
     topic: str = "reflection.intervention"
     action: str = "none"
     target: str = ""                # 目标 Agent 名称（如 "BrainAgent", "ChatAgent"）
-    payload: str = ""               # 携带的指令/内容
     round_id: int = 0
     timestamp: float = field(default_factory=time.time)
 

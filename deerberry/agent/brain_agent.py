@@ -22,10 +22,22 @@ class BrainAgent:
     """ 大脑智能体封装 """
 
     DEFAULT_SYS_PROMPT = \
-"""你是一个智能体集群的大脑核心系统，负责深度分析用户对话并为子智能体集群提供完成核心困难的推理任务。
+"""你是一个智能体集群的大脑核心，负责深度分析用户对话并为子智能体集群提供对话上的推理辅助。
 
 ### 任务简介
-根据用户的输入和对话历史，分析用户的情绪、意图、隐含需求，并调用合适的工具来完成对话任务。
+根据用户的输入和对话历史，分析用户的情绪、意图、隐含需求，并调用合适的工具来完成对话任务，因此你需要：
+ 1. 你的所有thinking推理都必须以第一人称“我”角度进行思考。
+ 2. 用户可以观察到你的思考过程，因此你应该在思考过程中思考“我”应该怎么回答用户。
+   2.1 你的推理需要注意：用户意图、相关历史记忆、执行任务的结果
+   2.2 多轮对话需要保持较高话题跟随性
+   2.3 对话内容自然
+ 3. 你的思考过程可以作为一个对话过程，因此你的整个思考过程必须是一个流畅通顺的思考文本。
+ 4. 你的思考过程结束后，可以不需要总结信息，因为从中间思考过程中你已经将部分答案提前回复了用户，因此你的答案总结可以简单回复用户。
+
+在你的推理中，你可能需要注意：
+ - 用户意图分析
+ - 相关的历史记忆（如有）
+ - 所执行的任务结果
 
 ### 工具使用
 你可以使用以下工具帮助你的思考：
@@ -35,21 +47,11 @@ class BrainAgent:
 - read_paper: 根据论文ID获取论文正文文本
 - get_paper_details: 根据论文ID获取论文的摘要、参考文献、被引情况，非正文文本
 - search_authors: 搜索论文学者/作者
-- get_current_time: 获取当前的日期和时间用于实时时间作为推理信息时
+- get_current_time: 获取目前最新日期时间，用于检索最新时间的信息时使用
 
 ### 输出要求
-在完成所有任务后，将任务结果总结为一段自然语言的文本的答复，使对话生成更自然、更贴合用户需求的回复响应。
-
-回复建议应包含以下内容：
-- 意图判断
-- 相关的历史记忆（如有）
-- 需要注意的信息（如有）
-- 所执行的任务结果
-
-要求：
-1. 仅只输出自然语言文本，不要输出 JSON、不要输出代码块
-2. 语气客观、分析性强，指出你所思考的内容
-3. 第一人称为“我”，内容倾向于“我”智能体的思考过程
+输出自然文本对话，要求：
+仅只输出自然语言文本，不要输出JSON及代码块，不要输出表情符号。
 """
 
     def __init__(
@@ -134,8 +136,8 @@ class BrainAgent:
                 self._current_iter += 1
                 text = ""
                 tool_uses = []
-                if hasattr(output, "get_text_content"):
-                    text = output.get_text_content() or ""
+                if hasattr(output, "get_content_blocks"):
+                    text = BrainAgent._extract_text_and_thinking(output)
                 if hasattr(output, "get_content_blocks"):
                     for block in output.get_content_blocks("tool_use"):
                         if isinstance(block, dict):
@@ -225,8 +227,8 @@ class BrainAgent:
                 self._current_iter += 1
                 text = ""
                 tool_uses = []
-                if hasattr(output, "get_text_content"):
-                    text = output.get_text_content() or ""
+                if hasattr(output, "get_content_blocks"):
+                    text = BrainAgent._extract_text_and_thinking(output)
                 if hasattr(output, "get_content_blocks"):
                     for block in output.get_content_blocks("tool_use"):
                         if isinstance(block, dict):
@@ -313,7 +315,7 @@ class BrainAgent:
             """Patch print 方法，在 reasoning stream 过程中实时捕获文本。"""
             try:
                 if self._is_streaming_reasoning:
-                    text = msg.get_text_content() or ""
+                    text = BrainAgent._extract_text_and_thinking(msg)
                     self._stream_buffer = text
             except Exception as e:
                 print(f"[BrainAgent] ⚠️ patched_print 异常（已吞）: {e}")
@@ -397,6 +399,32 @@ class BrainAgent:
         # 2. 当前流式输出（如果有）
         total += len(self._stream_buffer)
         return total
+
+    @staticmethod
+    def _extract_text_and_thinking(msg) -> str:
+        """从 Msg 中同时提取 text 块和 thinking 块，合并为完整字符串。
+
+        AgentScope 的流式输出将模型外显文本放在 `type="text"` 块，
+        将内部思考过程放在 `type="thinking"` 块（如 Qwen3、DeepSeek-R1
+        等模型通过 OpenAI 兼容 API 输出的 reasoning_content）。
+        `get_text_content()` 仅提取 text 块，会丢失完整的思考过程。
+        """
+        if msg is None:
+            return ""
+        if hasattr(msg, "get_content_blocks"):
+            parts = []
+            for block in msg.get_content_blocks():
+                if isinstance(block, dict):
+                    btype = block.get("type")
+                    if btype == "text" and block.get("text"):
+                        parts.append(block["text"])
+                    elif btype == "thinking" and block.get("thinking"):
+                        parts.append(block["thinking"])
+            if parts:
+                return "\n\n".join(parts)
+        if hasattr(msg, "get_text_content"):
+            return msg.get_text_content() or ""
+        return str(msg) if msg else ""
 
     def _build_status_suffix(self) -> str:
         """构建状态摘要字符串，可追加到中间汇报内容尾部。
@@ -484,7 +512,7 @@ class BrainAgent:
         self._think_start_ts = time.time()
 
         result = await self.agent.reply(user_msg)
-        text = result.get_text_content()
+        text = BrainAgent._extract_text_and_thinking(result)
 
         # ── Debug: 打印 BrainAgent 最终输出 ──
         print(f"\n{'='*60}")

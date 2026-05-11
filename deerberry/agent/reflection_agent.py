@@ -19,7 +19,7 @@
 """
 
 import json
-from typing import Optional
+from typing import List, Optional
 
 from agentscope.message import Msg
 from agentscope.model import OpenAIChatModel
@@ -39,33 +39,41 @@ MIDWAY_MAX_THRESHOLD = float(30.0)
 # 阈值随前台回复长度增长的系数（每字符增加的秒数）
 MIDWAY_THRESHOLD_FACTOR = float(0.1)
 
+
+DEFAULT_REFLECTION_SYS_PROMPT = \
+"""你是智能体集群的任务编排器，你的职责是判断智能体的历史对话中最近一条的回复应该被判别为哪一类。
+
+### 任务信息
+请你审视整个与用户的对话历史，重点在于你需要审视最近一句的回答是否承接整个话题、整个对话历史是否正常通顺。
+你需要判断的信息：
+ 1. 用户的初始提问
+ 2. 你最近一轮的回答
+ 3. 历史对话记录
+   3.1 请注意含有标记"[系统提示]"的对话上下文非用户触发，而是系统固定让智能体产生思考，请只将不包含该标记的用户对话作为用户的对话内容。
+
+### 判断标记解释
+你的判断将由特定标签进行选择，请根据你的判断枚举选择一个是否能合适作为本次回答的判断：["summarize", "fatal_error", "ignore"]
+以下是标签的判断解释：
+ - summarize: 在**历史对话记录**中你判断出**你最近一轮的回答**的内容是对事实观点的陈述、新增观点的补充，是一个结论对话。
+ - ignore: 结合**用户的初始提问**和**你最近一轮的回答**，你判断本轮回答是否和历史对话记录中已给出的回答在核心信息上完全重叠，没有新增事实、没有新观点，属于对已有答案的冗余扩写或重复陈述，信息增量为零，应被忽略，因此是一个可忽略对话。
+ - repeat: 在**历史对话记录**中，**你最近一轮的回答**只是在重复复读、或冗余赘述同一个观点，用户只能得到重复观点、信息无变化的回答，是一个重复错误。
+
+### 输出格式
+你只能从枚举列表输出一个从特定标记标记，以此来判断你的对话判断
+"""
+
 class ReflectionAgent(SimpleAgent):
     """反思智能体（Meta-Cognitive Controller / 审判官）。
     基于 SimpleAgent 实现：单步 LLM 调用，无 ReAct 循环，快速完成判断。
     """
-
-    DEFAULT_SYS_PROMPT = \
-"""你是智能体集群的任务编排器，你的职责是判断后台思考智能体(Brain Agent)完成深度思考后，其深度思考的结果结合最近上下文智能体的回答中，是否还有需要告知给用户。
-
-判断信息：
-1. 与用户的历史对话内容
-2. 后台思考智能体(Brain Agent)的最新的深度思考结果
-
-判断规则：
-- summarize: Brain Agent 在最近上下文的背景下，新的结论提供了没有提到的新事实/数据/结论，需要总结告知用户
-- clarify: Brain Agent 发现最近上下文对话中，用户可能存在信息缺失或智能体理解模糊，需要请求响应向用户追问澄清
-- ignore: 最近上下文对话历史中，最近一轮对话已经正确解答用户的问题，而 Brain Agent 最新的思考结果只是重复或赘述，则不需要再次响应，避免打扰用户或出现重复回答
-
-你只能输出一个 token 标记，从以下枚举值进行选取: ["summarize", "ignore", "clarify"]
-"""
-
+    
     def __init__(self, model: Optional[OpenAIChatModel] = None) -> None:
         if model is None:
             raise ValueError("ReflectionAgent 需要传入 model 参数")
 
         super().__init__(
             name="reflection",
-            sys_prompt=self.DEFAULT_SYS_PROMPT,
+            sys_prompt=DEFAULT_REFLECTION_SYS_PROMPT,
             model=model,
             memory=InMemoryMemory(),
             formatter=OpenAIChatFormatter(),
@@ -101,66 +109,38 @@ class ReflectionAgent(SimpleAgent):
 
         return threshold
 
-    # ── 判断 1：前台完成后（保持规则驱动，轻量快速）──
-    # 目前这个判断不知道有什么用，因为后台大脑智能体一直是常驻开着的，前台响应无论是否正常都不影响大脑智能体运行
-    async def judge_after_front(
-        self,
-        chat_response: Optional[Msg],
-        emotion_response: Optional[Msg],
-        brain_status: str,
-        elapsed: float,
-    ) -> InterventionEvent:
-        """前台 Agent（Chat + Emotion）完成后立即判断。
 
-        当前保持规则驱动：Brain 思考超时则强制打断。
+
+    # --- 每次返回判断反思
+    async def judge_each_chat(self, user_input, agent_response, chat_history: List[Msg]):
         """
-        OVER_THINK_THRESHOLD = 60.0
-
-        if brain_status == "thinking" and elapsed > OVER_THINK_THRESHOLD:
-            return InterventionEvent(
-                action="stop_brain",
-                target="BrainAgent",
-                payload="前台已快速解决，Brain 停止过度思考",
-            )
-        return InterventionEvent(action="none", target="")
-
-
-
-    # ── 判断 2：Brain 思考完成后（LLM 驱动）──
-    async def judge_after_brain(
-        self,
-        thought: ThoughtEvent,
-        chat_response: Optional[Msg],
-        user_question: str = "",
-        chat_history: Optional[list[Msg]] = None,
-    ) -> InterventionEvent:
-        """BrainAgent 思考完成后的 LLM 驱动判断。
+        对每一条最终回复都判断是否合理。
+        合理：信息正确可解答用户问题、追问内容合适符合主题、正确像用户澄清问题、正确问候用户
+        不合理：冗余重复回答、不合理的答案、重复复读答案
 
         Args:
-            thought: BrainAgent 思考完成事件
-            chat_response: ChatAgent 的前台回复
-            user_question: 用户的原始问题文本
-            chat_history: 外部传入的对话历史（方案 A）；若为 None，则从 self.memory 读取（方案 C）
+            chat_history: 外部传入的对话历史
+            ...
 
         Returns:
-            InterventionEvent，action 可能为 summarize / ignore / clarify
+            标签标记，
         """
-        chat_response = chat_response.get_text_content() if chat_response else ""
-        brain_text = thought.raw_data.get("insight", "") if thought else ""
-
-
-        review_content = f"""请根据以下Brain Agent的思考结果，输出本轮任务编排判断：
-【用户最开始提问的问题】：
-{chat_response}
         
-【Brain Agent思考结果】
-{brain_text}"""
+        review_content = f"""[系统提示]\t请使用以下信息完成你本轮对话的判断，**历史对话记录**已存在提供的上下文中。
+**用户的初始提问** :```
+{user_input}
+```
 
-        # ── 直接构造完整 prompt（system + 历史 + 当前审查）──
+**你最近一轮的回答** :```
+{agent_response}
+```
+"""
+
+        # 拼接prompt（system + 历史 + 当前审查）──
         # 不经过 self.reply()，因为 save_to_memory=False 会导致当前 msg 被丢弃
         messages = [
-            Msg("system", self.sys_prompt, "system"),
-            *history_msgs,
+            Msg("system", DEFAULT_REFLECTION_SYS_PROMPT, "system"),
+            *chat_history,
             Msg(name="user", content=review_content, role="user"),
         ]
         prompt = await self.formatter.format(messages)
@@ -172,33 +152,32 @@ class ReflectionAgent(SimpleAgent):
         await self.print_llm_response(result_text)
 
         # ── 解析 token 输出 ──
-        text = result_text.strip().lower()
-
         # 取第一个有效词作为 action（LLM 可能输出换行或额外空格）
-        action = text.split()[0] if text else "ignore"
+        _text = result_text.strip().lower()
+        action = _text.split()[0] if _text else ""
 
-        # payload 固定使用 BrainAgent 的洞察原文
-        payload = brain_text
 
         if action == "summarize":
             return InterventionEvent(
                 action="summarize",
-                target="ChatAgent",
-                payload=payload,
+                target="ChatAgent"
             )
         elif action == "clarify":
             return InterventionEvent(
                 action="clarify",
-                target="ChatAgent",
-                payload=payload,
+                target="ChatAgent"
             )
         else:
-            # 包括 "ignore" 或任何无法识别的 token
+            # 任何无法识别的 token
             return InterventionEvent(
                 action="ignore",
                 target="",
-                payload="",
             )
+    
+    
+    
+    
+            
 
     # ── 判断 3：Brain 思考超时（规则驱动）──
     async def judge_timeout(

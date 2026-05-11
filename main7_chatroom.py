@@ -75,8 +75,7 @@ from deerberry.logger.logger import enable_file_logging
 from deerberry.pipeline.chatroom_controller import (
     EventBus,
     BackgroundBrainAgent,
-    UserInputEvent,
-    InterventionEvent,
+    UserInputEvent
 )
 from deerberry.pipeline.front_stage_pipeline import FrontStagePipeline
 from deerberry.agent.reflection_agent import ReflectionAgent
@@ -111,149 +110,86 @@ def build_model_for_role(role: str, stream: bool = True) -> OpenAIChatModel:
     )
 
 
-# =============================================================================
-# 【阶段2】中间过程监听器（Midway Watcher）
-# =============================================================================
-# 每轮对话最多允许的中间介入次数
-MAX_MIDWAY_INTERVENTIONS = int(10)
 
-async def _midway_watcher(
-    brain_bg: BackgroundBrainAgent,
+from deerberry.pipeline.back_stage_midway import midway_watcher
+
+
+
+
+async def _trigger_brain_summary(
     chat_agent: ChatAgent,
     scheduler: OutputScheduler,
-    emotion: str,
-    threshold: float,
-    stop_event: asyncio.Event,
+    reflection_agent: ReflectionAgent,
+    current_emotion: str,
+    user_input: str,
+    summary_thought: str,
+    source_label: str = "brain_summary",
+    user_name: str = "用户",
 ) -> None:
-    """中间过程监听器：在 brain 思考期间，定时检查是否触发中间汇报。
+    """基于 brain 的思考结果触发 ChatAgent 生成总结并调度输出。
 
-    触发条件（需同时满足）：
-    1. brain 状态为 thinking
-    2. brain 已调用过工具（has_used_tools=True）
-    3. 已超时（elapsed > threshold）
-    4. 介入次数 < MAX_MIDWAY_INTERVENTIONS
-
-    触发后：
-    - 获取 brain 当前思考进展
-    - 调用 ChatAgent 向用户做中间汇报
-    - 将 ChatAgent 回复 TTS 播报
-    - 将 ChatAgent 回复 observe 回灌到 BrainAgent（assistant 角色）
+    被 "completed" 状态和 "timeout" 状态共用，避免代码重复。
     """
-    start_ts = time.perf_counter()
-    intervention_count = 0
+    if not summary_thought or not summary_thought.strip():
+        print(f"[BrainSummary] ⚠️ 思考内容为空，跳过总结触发")
+        return
 
-    while not stop_event.is_set():
-        await asyncio.sleep(1.0)
+    trigger_msg_1 = Msg(
+        name=user_name,
+        content="[系统提示]\t请你总结思考",
+        role="user",
+    )
+    await chat_agent.memory.add(trigger_msg_1)
 
-        if stop_event.is_set():
-            break
+    insight_msg = Msg(
+        name="assistant",
+        content=f"{summary_thought.strip()}",
+        role="assistant",
+    )
+    await chat_agent.memory.add(insight_msg)
 
-        # brain 是否还在思考
-        if brain_bg.status != "thinking":
-            break
+    trigger_msg_2 = Msg(
+        name=user_name,
+        content="[系统提示]\t你上轮思考的总结请说给用户",
+        role="user",
+    )
+    summary_msg = await chat_agent.reply(trigger_msg_2)
 
-        elapsed = time.perf_counter() - start_ts
+    summary_text = summary_msg.get_text_content() or ""
+    chat_history = await chat_agent.memory.get_memory()
 
-        # 未超阈值，继续等待
-        if elapsed <= threshold:
-            continue
+    intervention = await reflection_agent.judge_each_chat(
+        user_input=user_input,
+        agent_response=summary_text,
+        chat_history=chat_history,
+    )
 
-        # 检查是否已使用工具（无工具调用则不介入）
-        if not brain_bg.brain.has_used_tools():
-            break
+    action_label = intervention.action
+    print(f"💬 [{action_label}] {summary_text}")
 
-        # 【新增】避免第1轮 acting 刚完成就触发：
-        # 等 BrainAgent 至少完成 2 轮 reasoning 后，思考内容才足够有价值
-        snapshot = brain_bg.brain.get_react_snapshot()
-        if snapshot.get("total_iters", 0) < 2:
-            print(f"[Midway] ⏳ Brain 仅完成 {snapshot.get('total_iters', 0)} 轮，等待更多思考内容...")
-            continue
-
-        # 【新增】防御性内容阈值检查：
-        # 只有当 brain 产生了足够实质性的内容（字符数）时才触发 midway，
-        # 防止网络波动/空 reasoning 导致无效 midway 触发。
-        MIN_MIDWAY_CONTENT_CHARS = 10  # 约 150-200 token，可根据模型调整
-        total_chars = brain_bg.brain.get_total_reasoning_length()
-        if total_chars < MIN_MIDWAY_CONTENT_CHARS:
-            print(f"[Midway] ⏳ Brain 思考内容仅 {total_chars} 字符（阈值 {MIN_MIDWAY_CONTENT_CHARS}），继续等待实质输出...")
-            continue
-
-        # 检查介入次数上限
-        if intervention_count >= MAX_MIDWAY_INTERVENTIONS:
-            break
-
-        # ── 触发中间介入 ──
-        print(f"[Midway] ⏱ 已超时 {elapsed:.1f}s (> {threshold:.1f}s)，触发中间思考过程汇报")
-
-        snapshot = brain_bg.brain.get_react_snapshot()
-        sub_status = brain_bg.brain.get_current_sub_status()
-
-        try:
-            # 1. 截断点后：当前正在进行的新一轮 reasoning 的流式输出（增量）
-            if sub_status == "reasoning":
-                stream_delta = brain_bg.brain.get_stream_buffer_delta()
-                if stream_delta and stream_delta.strip():
-                    await chat_agent.memory.add(
-                        Msg(
-                            name=USER_NAME,
-                            # content="### 系统提示\n请你后台进行思考或工具调用",
-                            content="请你思考一下",
-                            role="user",
-                        ),
-                        marks="midway_user_anchor",
-                    )
-                    
-                    await chat_agent.memory.add(
-                        Msg(
-                            name="brain_center",
-                            # content=f"### 思考过程\n我还正在思考或执行工具中，以下是已思考的增量内容：\n{stream_delta.strip()}",
-                            content=f"我继续思考了以下增量内容：\n{stream_delta.strip()}",
-                            role="assistant",
-                        ),
-                        marks="midway_stream",
-                    )
-                    brain_bg.brain.mark_stream_synced()
-
-            # 2. 添加 user 触发消息（无 mark，直接通过 id 清理）
-            trigger_msg = Msg(
-                name=USER_NAME,
-                # content="### 系统提示\n可以暂时先提前使用这些上下文信息和我交流",
-                content="可以先说说你的想法",
-                role="user",
-            )
-            await chat_agent.memory.add(trigger_msg)
-
-            midway_reply = await chat_agent.reply(None)
-
-            midway_text_raw = midway_reply.get_text_content() or ""
-            print(f"💬 [中间思考过程汇报] {midway_text_raw}")
-
-            # 3. TTS 播报中间汇报（使用原始文本，不带时间戳）
-            # 【关键】midway 语音可以被用户下一轮输入打断，因为 scheduler.interrupt()
-            # 会在用户新输入时调用 tts.stop() + 清空队列
-            await scheduler.schedule(midway_text_raw, emotion, "midway")
-
-            # observe 回灌到 BrainAgent（assistant 角色）
-            observe_msg = Msg(
-                name="brain_center",
-                content=f"[已回复用户({USER_NAME})]：{midway_reply}",
-                role="assistant",
-            )
-            await brain_bg.brain.agent.observe(observe_msg)
-
-            intervention_count += 1
-            print(f"[Midway] ✅ 中间思考过程汇报完成（第 {intervention_count}/{MAX_MIDWAY_INTERVENTIONS} 次）")
-
-        except Exception as e:
-            print(f"[Midway] ❌ 中间思考过程汇报失败: {e}")
-            import traceback
-            traceback.print_exc()
-
+    # ── ReflectionAgent 判决后的输出调度 ──
+    if action_label in ("summarize", "clarify"):
+        await scheduler.schedule(
+            summary_text,
+            current_emotion,
+            source_label,
+        )
+        
+    # elif action_label in ("ignore", "repeat"):
+    #     print(f"[Reflection] ⏭️ 回答被忽略（action=ignore），不进入输出调度器")
+        
+    elif action_label in ("ignore", "repeat", "fatal_error"):
+        deleted_count = await chat_agent.memory.delete(
+            msg_ids=[trigger_msg_2.id, summary_msg.id]
+        )
+        print(f"[Reflection] 🗑️ 严重错误（action=fatal_error），已从 memory 删除 {deleted_count} 条消息")
+        
+    else:
+        print(f"[Reflection] ⚠️ 未知 action='{action_label}'，默认不进入输出调度器")
 
 # =============================================================================
 # 【基础设施】主函数
 # =============================================================================
-
 async def main() -> None:
     # ── 0. 初始化日志 ──
     enable_file_logging()
@@ -400,9 +336,6 @@ async def main() -> None:
                     msg=msg, round_id=round_num
                 ))
 
-                # 【ReflectionAgent】积累用户输入到对话历史
-                await reflection_agent.observe(msg)
-
                 # ── 6.3 前台并行轨道：ChatAgent + EmotionAgent ──
                 # 【前台智能体】由 FrontStagePipeline 统一封装并行执行 + 结果组合 + 输出调度
                 chat_result, emotion_result = await front_stage.respond(msg)
@@ -422,20 +355,21 @@ async def main() -> None:
                 print(f"[Midway] 🕐 动态阈值: {threshold:.1f}s（前台回复 {len(chat_result.get_text_content() or '')} 字符）")
                 current_stop_event = asyncio.Event()
                 current_midway_task = asyncio.create_task(
-                    _midway_watcher(
+                    midway_watcher(
                         brain_bg=brain_bg,
                         chat_agent=chat_agent,
                         scheduler=scheduler,
+                        reflection_agent=reflection_agent,
                         emotion=current_emotion,
                         threshold=threshold,
                         stop_event=current_stop_event,
+                        user_name=USER_NAME,
+                        user_input=user_input,
                     )
                 )
 
                 # ── 6.5 等待 BrainAgent 思考结果（带超时，非阻塞前台）──
-                # 【策略占位】超时阈值：简单问题 Brain 可能不需要跑完
                 BRAIN_TIMEOUT = 60.0  # 秒，建议后续根据问题复杂度动态调整
-
                 try:
                     # FIXME: 深度思考（前台没有响应后最大容许大脑智能体的时间），这个地方需要调整 因为不知道有什么用
                     brain_output = await asyncio.wait_for(
@@ -458,80 +392,56 @@ async def main() -> None:
                     current_midway_task = None
                     current_stop_event = None
                     
+                    # 只有状态为completed时才触发总结
                     if brain_output["status"] == "completed":
                         thought = brain_output["thought"]
+                        summary_thought = thought.raw_data.get("insight", "")
 
-                        # ── 6.6 ReflectionAgent 审判：Brain 完成后 ──
-                        # 【同步上下文】ReflectionAgent 使用 ChatAgent 的完整 memory 作为对话历史，
-                        # 确保审判时看到的上下文与闲聊智能体完全一致。
-                        chat_history = await chat_agent.memory.get_memory()
-                        intervention = await reflection_agent.judge_after_brain(
-                            thought=thought,
-                            chat_response=chat_result,
-                            user_question=user_input,
-                            chat_history=chat_history,
+                        await _trigger_brain_summary(
+                            chat_agent=chat_agent,
+                            scheduler=scheduler,
+                            reflection_agent=reflection_agent,
+                            current_emotion=current_emotion,
+                            user_input=user_input,
+                            summary_thought=summary_thought,
+                            source_label="brain_summary",
+                            user_name=USER_NAME,
                         )
-
-                        if intervention.action == "ignore":
-                            print(f"[Reflection] ⏭️ Brain 结果被忽略")
-                            print(f"   原因: {intervention.payload}")
-
-                        elif intervention.action in ("clarify", "summarize"):
-                            insight = intervention.payload
-                            action_label = "总结" if intervention.action == "summarize" else "追问"
-                            print(f"[Reflection] 💡 Brain {action_label}同步到 ChatAgent")
-                            print(f"   {insight[:100]}{'...' if len(insight) > 100 else ''}")
-
-                            # 将大脑洞察作为临时上下文加入对话历史
-                            trigger_msg = Msg(
-                                name=USER_NAME,
-                                # content="### 系统提示\n上述思考可以与我聊聊",
-                                content="请你思考一下",
-                                role="user",
-                            )
-                            await chat_agent.memory.add(trigger_msg)
-            
-                            TEMP_MARK = "brain_insight_temp"
-                            insight_msg = Msg(
-                                name="assistant",
-                                # content=f"### 思考总结\n我思考结束了，总结了一段想要描述给用户的思考对话大纲\n{insight}",
-                                content=f"我思考结束了并总结一段思考过程\n{insight}",
-                                role="assistant",
-                            )
-                            await chat_agent.memory.add(insight_msg, marks=TEMP_MARK)
-
-                            # 添加 user 触发消息，使用 reply(None) 避免重复添加
-                            await chat_agent.memory.add(
-                                Msg(
-                                    name=USER_NAME,
-                                    # content="### 系统提示\n根据你的想法回复",
-                                    content="根据你的想法回复",
-                                    role="user",
-                                ),
-                                marks=TEMP_MARK,
-                            )
-                            follow_up = await chat_agent.reply(insight_msg)
-
-                            follow_text_raw = follow_up.get_text_content() or ""
-                            print(f"💬 [{action_label}] {follow_text_raw}")
-
-                            # 插队播报追问内容（高优先级）
-                            # 插队播报追问内容（source="brain_clarify" 自动映射为最高优先级 SUMMARY）
-                            await scheduler.schedule(
-                                follow_text_raw,
-                                EmotionAgent.parse_action(
-                                    emotion_result.get_text_content()
-                                ) if emotion_result else "smile",
-                                "brain_clarify",
-                            )
-
-                    elif brain_output["status"] == "cancelled":
-                        print("🧠 BrainAgent 思考已被取消（被 ReflectionAgent 或新输入打断）")
+                                                    
 
                 except asyncio.TimeoutError:
-                    print(f"[Reflection] ⏱ BrainAgent 思考超时（>{BRAIN_TIMEOUT}s），放弃本轮结果")
-                    # 【策略占位】超时后可选：强制打断 Brain，或让其继续后台运行但不等待
+                    print(f"[Reflection] ⏱ BrainAgent 思考超时（>{BRAIN_TIMEOUT}s），触发最后一次总结")
+
+                    # 先获取 brain 当前已产生的思考内容（取消前快照）
+                    snapshot = brain_bg.brain.get_react_snapshot()
+                    parts = []
+                    for it in snapshot.get("iterations", []):
+                        text = it.get("reasoning_text", "")
+                        if text:
+                            parts.append(text)
+                    stream = snapshot.get("stream_buffer", "")
+                    if stream:
+                        parts.append(stream)
+                    summary_thought = "\n\n".join(parts)
+
+                    # 取消 brain（同步接口，不等待 Task 结束）
                     brain_bg.cancel()
+
+                    # 触发最后一次总结（若还有可用内容）
+                    if summary_thought.strip():
+                        await _trigger_brain_summary(
+                            chat_agent=chat_agent,
+                            scheduler=scheduler,
+                            reflection_agent=reflection_agent,
+                            current_emotion=current_emotion,
+                            user_input=user_input,
+                            summary_thought=summary_thought,
+                            source_label="brain_summary",
+                            user_name=USER_NAME,
+                        )
+                    else:
+                        print("[BrainSummary] ⚠️ 超时后无可用思考内容，跳过总结")
+
                     # 超时后也需要停止 midway_watcher
                     if current_stop_event:
                         current_stop_event.set()

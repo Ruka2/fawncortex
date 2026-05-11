@@ -12,7 +12,7 @@ from agentscope.message import TextBlock
 
 
 def get_current_time(format: str = "%Y-%m-%d %H:%M:%S") -> ToolResponse:
-    """获取当前的日期和时间。
+    """获取目前最新的日期和时间。
 
     当用户询问涉及时间、日期、时效性、最近动态、
     实时信息或需要以当前时间为参考进行推理时，
