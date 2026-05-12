@@ -94,10 +94,7 @@ USER_NAME = "鹿过"
 # =============================================================================
 
 def build_model_for_role(role: str, stream: bool = True) -> OpenAIChatModel:
-    """根据 config.LLM_ROLE_CONFIG 中的角色映射创建 OpenAIChatModel。
-
-    与 main5_planqueue.py 保持一致。
-    """
+    """ 根据 config.LLM_ROLE_CONFIG 中的角色映射创建 OpenAIChatModel """
     cfg = config.LLM_ROLE_CONFIG.get(role, {})
     model_name = cfg.get("model_name") or config.LLM_MODEL_NAME
     api_key = cfg.get("api_key") or config.LLM_API_KEY
@@ -300,7 +297,7 @@ async def main() -> None:
                 )
 
                 # ── 6.5 等待 BrainAgent 思考结果（带超时，非阻塞前台）──
-                BRAIN_TIMEOUT = 60.0  # 秒，深度思考，前台没有响应后最大容许大脑智能体的时间，建议后续根据问题复杂度动态调整
+                BRAIN_TIMEOUT = 360.0  # 秒，深度思考，前台没有响应后最大容许大脑智能体的时间，建议后续根据问题复杂度动态调整
                 try:
                     brain_output = await asyncio.wait_for(
                         brain_bg.output_queue.get(),

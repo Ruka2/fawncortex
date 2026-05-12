@@ -163,6 +163,17 @@ class OutputScheduler:
         except Exception as e:
             print(f"⚠️  TTS 合成/播放失败: {e}")
 
+    async def wait_until_idle(self) -> None:
+        """等待当前正在播放的 TTS 完成（如果有）。
+
+        用于 brain_summary 等场景，避免打断正在播放的 midway 语音。
+        """
+        if self._current_tts_task and not self._current_tts_task.done():
+            try:
+                await self._current_tts_task
+            except asyncio.CancelledError:
+                pass
+
     async def stop(self) -> None:
         """停止调度器。"""
         self._running = False
