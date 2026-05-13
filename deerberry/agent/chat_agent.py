@@ -12,10 +12,11 @@
 from typing import Optional
 
 from agentscope.model import OpenAIChatModel
-from agentscope.memory import MemoryBase, InMemoryMemory
+from agentscope.memory import MemoryBase
 from agentscope.formatter import OpenAIChatFormatter
 
 from deerberry.base.simple_agent import SimpleAgent
+from deerberry.base.memory import ShortTermMemory
 
 
 # DEFAULT_CHAT_PROMPT = (
@@ -82,7 +83,7 @@ class ChatAgent(SimpleAgent):
             name=agent_name,
             sys_prompt=DEFAULT_CHAT_PROMPT,
             model=model,
-            memory=memory or InMemoryMemory(),
+            memory=memory or ShortTermMemory(),
             formatter=formatter or OpenAIChatFormatter(),
         )
 

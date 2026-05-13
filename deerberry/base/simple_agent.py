@@ -13,6 +13,8 @@ from agentscope.model import OpenAIChatModel
 from agentscope.memory import MemoryBase
 from agentscope.formatter import OpenAIChatFormatter
 
+from deerberry.base.memory import ShortTermMemory
+
 
 class SimpleAgent(AgentBase):
     """最简自定义智能体：单步调用大模型，无 ReAct 循环，本身不处理工具调用。
@@ -24,22 +26,22 @@ class SimpleAgent(AgentBase):
         name: str,
         sys_prompt: str,
         model: OpenAIChatModel,
-        memory: MemoryBase,
-        formatter: OpenAIChatFormatter,
+        memory: MemoryBase | None = None,
+        formatter: OpenAIChatFormatter | None = None,
         save_to_memory: bool = True,
     ) -> None:
         super().__init__()
         self.name = name
         self.sys_prompt = sys_prompt
         self.model = model
-        self.memory = memory
-        self.formatter = formatter
+        self.memory = memory or ShortTermMemory()
+        self.formatter = formatter or OpenAIChatFormatter()
         self.save_to_memory = save_to_memory
 
     async def reply(self, msg: Msg | list[Msg] | None) -> Msg:
         """接收消息 → 调用 LLM → 返回回复。"""
         if msg is not None:
-            if self.save_to_memory:  # fixme: 同时额外追加的一层条件
+            if self.save_to_memory:
                 await self.memory.add(msg)
 
         prompt = await self.formatter.format(

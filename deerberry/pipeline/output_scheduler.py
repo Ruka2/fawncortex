@@ -128,7 +128,7 @@ class OutputScheduler:
 
                 # 触发表情
                 try:
-                    express_emotion(action=task.emotion, duration=10.0, intensity=1.0)  # fixme: 此处需要debug排查问题
+                    express_emotion(action=task.emotion, duration=10.0, intensity=1.0)  # FIXME: 此处需要debug排查问题和开发
                 except Exception as e:
                     print(f"⚠️  表情触发失败: {e}")
 

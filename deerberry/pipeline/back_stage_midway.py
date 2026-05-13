@@ -29,7 +29,7 @@ from deerberry.pipeline.output_scheduler import OutputScheduler
 # 配置常量
 # =============================================================================
 # 每轮对话最多允许的中间介入次数
-MAX_MIDWAY_INTERVENTIONS = 10
+MAX_MIDWAY_INTERVENTIONS = 12
 
 
 # =============================================================================

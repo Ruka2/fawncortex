@@ -604,15 +604,6 @@ function renderChatContext() {
     if (!DOM.chatContextList) return;
     DOM.chatContextList.innerHTML = '';
 
-    const statsDiv = document.createElement('div');
-    statsDiv.className = 'chat-stats';
-    statsDiv.innerHTML = `
-        <span class="stat">上下文长度: <b>${AppState.chatContextLength}</b></span>
-        <span class="stat">响应耗时: <b>${(AppState.chatLastResponseTime || 0).toFixed(2)}s</b></span>
-        <span class="stat">Reflection: <b>${AppState.chatReflectionAction}</b></span>
-    `;
-    DOM.chatContextList.appendChild(statsDiv);
-
     const currentRound = AppState.currentRound;
     const listDiv = document.createElement('div');
     listDiv.style.overflowY = 'auto';

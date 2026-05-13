@@ -11,11 +11,12 @@
 from typing import Optional
 
 from agentscope.model import OpenAIChatModel
-from agentscope.memory import MemoryBase, InMemoryMemory
+from agentscope.memory import MemoryBase
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg
 
 from deerberry.base.simple_agent import SimpleAgent
+from deerberry.base.memory import ShortTermMemory
 
 
 DEFAULT_EMOTION_PROMPT = (
@@ -43,7 +44,7 @@ class EmotionAgent(SimpleAgent):
             name=name,
             sys_prompt=sys_prompt or DEFAULT_EMOTION_PROMPT,
             model=model,
-            memory=memory or InMemoryMemory(),
+            memory=memory or ShortTermMemory(),
             formatter=formatter or OpenAIChatFormatter(),
             save_to_memory=True,
         )

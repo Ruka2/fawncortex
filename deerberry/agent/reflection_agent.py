@@ -111,6 +111,7 @@ class ReflectionAgent(SimpleAgent):
     @staticmethod
     def compute_dynamic_threshold(chat_result: Optional[Msg]) -> float:
         """根据前台对话长度计算动态阈值。
+        TODO: 后续需要优化这个等待大脑思考的时间阈值，调整为根据对话任务难度估算，而不是现在基于前台回复的字数的长度系数
 
         逻辑：
         - 前台回复越短 → 用户问题越简单 → 容忍时间越短
