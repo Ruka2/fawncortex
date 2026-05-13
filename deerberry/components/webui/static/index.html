@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deerberry Web UI</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 顶部标题栏 -->
+        <header class="app-header">
+            <div class="header-title">🦌 Deerberry 多智能体对话系统</div>
+            <div class="header-status">
+                <span id="connection-status" class="status-dot disconnected">未连接</span>
+            </div>
+        </header>
+
+        <!-- 主体区域 -->
+        <div class="app-body">
+            <!-- 左侧：主聊天窗口 -->
+            <div class="main-chat">
+                <div class="chat-header">
+                    <span class="chat-title">主聊天窗</span>
+                    <span id="round-indicator" class="round-badge">Round 0</span>
+                </div>
+                <div id="chat-messages" class="chat-messages"></div>
+                <div class="chat-input-area">
+                    <textarea id="user-input" placeholder="输入消息，按 Enter 发送..." rows="2"></textarea>
+                    <button id="send-btn" class="send-btn">发送</button>
+                </div>
+            </div>
+
+            <!-- 右侧：辅助上下文面板 -->
+            <div class="side-panels">
+                <!-- BrainAgent 面板 -->
+                <div class="panel" id="panel-brain">
+                    <div class="panel-header" data-target="brain-content">
+                        <span class="panel-title">🧠 BrainAgent</span>
+                        <span class="panel-status" id="brain-status">idle</span>
+                        <span class="panel-toggle">▼</span>
+                    </div>
+                    <div class="panel-content" id="brain-content">
+                        <div class="brain-stats">
+                            <span class="stat">AgentLoop思考轮数: <b id="brain-iters">0</b></span>
+                            <span class="stat">耗时: <b id="brain-elapsed">0s</b></span>
+                            <span class="stat">工具: <b id="brain-tools">否</b></span>
+                            <span class="stat">工具调用次数: <b id="brain-tool-count">0</b></span>
+                        </div>
+                        <div class="brain-reasoning" id="brain-reasoning"></div>
+                        <div class="brain-tools" id="brain-tool-calls"></div>
+                    </div>
+                </div>
+
+                <!-- ChatAgent 面板 -->
+                <div class="panel" id="panel-chat">
+                    <div class="panel-header" data-target="chat-context-content">
+                        <span class="panel-title">💭 ChatAgent</span>
+                        <span class="panel-toggle">▼</span>
+                    </div>
+                    <div class="panel-content" id="chat-context-content">
+                        <div class="chat-stats">
+                            <span class="stat">上下文消息列表长度: <b id="chat-context-length">0</b></span>
+                            <span class="stat">耗时: <b id="chat-response-time">0s</b></span>
+                            <span class="stat">是否输出(reflection): <b id="chat-reflection-action">-</b></span>
+                        </div>
+                        <div class="context-list" id="chat-context-list"></div>
+                    </div>
+                </div>
+
+                <!-- EmotionAgent 面板 -->
+                <div class="panel" id="panel-emotion">
+                    <div class="panel-header" data-target="emotion-content">
+                        <span class="panel-title">😊 EmotionAgent</span>
+                        <span class="panel-toggle">▼</span>
+                    </div>
+                    <div class="panel-content" id="emotion-content">
+                        <div class="emotion-stats">
+                            <span class="stat">轮次: <b id="emotion-round">-</b></span>
+                            <span class="stat">耗时: <b id="emotion-elapsed">0s</b></span>
+                        </div>
+                        <div class="emotion-history" id="emotion-history"></div>
+                    </div>
+                </div>
+
+                <!-- ReflectionAgent 面板 -->
+                <div class="panel" id="panel-reflection">
+                    <div class="panel-header" data-target="reflection-content">
+                        <span class="panel-title">⚖️ ReflectionAgent</span>
+                        <span class="panel-toggle">▼</span>
+                    </div>
+                    <div class="panel-content" id="reflection-content">
+                        <div class="reflection-list" id="reflection-list"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 音频播放器（隐藏） -->
+    <audio id="tts-player" style="display:none;"></audio>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

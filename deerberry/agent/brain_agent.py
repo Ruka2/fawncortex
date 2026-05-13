@@ -32,7 +32,7 @@ class BrainAgent:
    2.2 多轮对话需要保持较高话题跟随性
    2.3 对话内容自然
  3. 你的思考过程可以作为一个对话过程，因此你的整个思考过程必须是一个流畅通顺的思考文本。
- 4. 你的思考过程结束后，不需要总结信息，因为从中间思考过程中你已经将部分答案提前回复了用户，因此你的答案总结可以简单回复用户。
+ 4. 你的思考过程结束后，不需要总结信息，你已经一步一步从中间思考过程提前回复给了用户你的答案，因此在最后总结这一步时顺着你的中间思考继续续写答案即可。
  5. 根据用户的问题简单程度酌情使用工具，即简单问题无须调用复杂工具，请根据对话和任务情况使用工具。
 
 在你的推理中，你可能需要注意：
@@ -143,7 +143,8 @@ class BrainAgent:
                     for block in output.get_content_blocks("tool_use"):
                         if isinstance(block, dict):
                             tool_uses.append({
-                                "name": block.get("name", "unknown"),
+                                # "name": block.get("name", "unknown"),
+                                "name": block.get("name", ""),  # FIXME: 临时将不调用工具的异常兜底改为空
                                 "input": block.get("input", {}),
                             })
 
@@ -177,13 +178,16 @@ class BrainAgent:
             """在 _acting() 后记录本轮 acting 信息，更新子状态。"""
             try:
                 tool_call = kwargs.get("tool_call", {})
-                tool_name = "unknown"
+                tool_name = "unknown" 
+                tool_name = ""   # FIXME: 临时将不调用工具的异常兜底改为空
                 tool_input = {}
                 if isinstance(tool_call, dict):
-                    tool_name = tool_call.get("name", "unknown")
+                    # tool_name = tool_call.get("name", "unknown")
+                    tool_name = tool_call.get("name", "")     # FIXME: 临时将不调用工具的异常兜底改为空
                     tool_input = tool_call.get("input", {})
                 elif hasattr(tool_call, "name"):
-                    tool_name = getattr(tool_call, "name", "unknown")
+                    # tool_name = getattr(tool_call, "name", "unknown")
+                    tool_name = getattr(tool_call, "name", "")     # FIXME: 临时将不调用工具的异常兜底改为空
                     if hasattr(tool_call, "input"):
                         tool_input = getattr(tool_call, "input", {})
 
@@ -233,10 +237,13 @@ class BrainAgent:
                 if hasattr(output, "get_content_blocks"):
                     for block in output.get_content_blocks("tool_use"):
                         if isinstance(block, dict):
-                            tool_uses.append({
-                                "name": block.get("name", "unknown"),
-                                "input": block.get("input", {}),
-                            })
+                            _name = block.get("name", "")
+                            # 过滤掉 name 为空的无效工具调用块
+                            if _name and _name.strip():
+                                tool_uses.append({
+                                    "name": _name,
+                                    "input": block.get("input", {}),
+                                })
                 self._latest_reasoning_text = text
                 if tool_uses:
                     self._sub_status = "acting"
@@ -267,18 +274,20 @@ class BrainAgent:
             output = await _original_acting(*args, **kwargs)
             # post-acting（内联原 _hook_post_acting 逻辑）
             try:
-                tool_call = kwargs.get("tool_call", {})
-                tool_name = "unknown"
+                # AgentScope 以位置参数调用 _acting(tool_call)，所以从 args[0] 获取
+                tool_call = args[0] if args else kwargs.get("tool_call", {})
+                tool_name = ""
                 tool_input = {}
                 if isinstance(tool_call, dict):
-                    tool_name = tool_call.get("name", "unknown")
+                    tool_name = tool_call.get("name", "")
                     tool_input = tool_call.get("input", {})
                 elif hasattr(tool_call, "name"):
-                    tool_name = getattr(tool_call, "name", "unknown")
+                    tool_name = getattr(tool_call, "name", "")
                     if hasattr(tool_call, "input"):
                         tool_input = getattr(tool_call, "input", {})
                 self._latest_tool_name = tool_name
-                if self._iter_results:
+                # 只记录有效的工具调用（name 非空）
+                if tool_name and tool_name.strip() and self._iter_results:
                     self._iter_results[-1]["acting"] = {
                         "tool_name": tool_name,
                         "tool_input": tool_input,

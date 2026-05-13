@@ -266,7 +266,7 @@ async def main() -> None:
 
                 # ── 6.3 前台并行轨道：ChatAgent + EmotionAgent ──
                 # 【前台智能体】由 FrontStagePipeline 统一封装并行执行 + 结果组合 + 输出调度
-                chat_result, emotion_result = await front_stage.respond(msg)
+                chat_result, emotion_result, chat_elapsed, emotion_elapsed = await front_stage.respond(msg)
 
                 # 记录当前轮次的表情，供 midway 汇报复用
                 if emotion_result:
@@ -331,6 +331,7 @@ async def main() -> None:
                             current_emotion=current_emotion,
                             user_input=user_input,
                             summary_thought=summary_thought,
+                            brain_bg=brain_bg,
                             source_label="brain_summary",
                             user_name=USER_NAME,
                         )
@@ -375,6 +376,7 @@ async def main() -> None:
                             current_emotion=current_emotion,
                             user_input=user_input,
                             summary_thought=summary_thought,
+                            brain_bg=brain_bg,
                             source_label="brain_summary",
                             user_name=USER_NAME,
                         )

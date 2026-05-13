@@ -129,7 +129,7 @@ class ReflectionAgent(SimpleAgent):
         threshold = base + token_count * factor
         threshold = min(threshold, max_threshold)
         
-        # threshold = float(5.0)
+        threshold = float(5.0)  # FIXME: 测试功能时会采用这样的时间戳
 
         return threshold
 

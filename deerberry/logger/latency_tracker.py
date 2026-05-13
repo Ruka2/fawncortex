@@ -88,15 +88,21 @@ class LatencyTracker:
             user_input=user_input,
         )
 
-    def finish_round(self) -> None:
-        """一轮所有节点执行完毕后调用，计算端到端并打印报告。"""
+    def finish_round(self) -> Optional[RoundLatencyReport]:
+        """一轮所有节点执行完毕后调用，计算端到端并打印报告。
+
+        Returns:
+            本轮的延迟报告对象（若当前无活跃轮次则返回 None）。
+        """
         if not self._current:
-            return
+            return None
 
         self._calc_e2e()
-        self._reports.append(self._current)
-        self._current.print_report()
+        report = self._current
+        self._reports.append(report)
+        report.print_report()
         self._current = None
+        return report
 
     # -------------------------------------------------------------------------
     # 事件记录
