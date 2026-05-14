@@ -144,12 +144,34 @@ body {
     font-weight: 500;
 }
 
-.round-badge {
+.chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.round-badge,
+.clear-btn {
     font-size: 12px;
     color: var(--text-secondary);
     background: #f0f0f0;
-    padding: 2px 8px;
+    padding: 4px 10px;
     border-radius: 10px;
+    line-height: 1.4;
+}
+
+.round-badge {
+    user-select: none;
+}
+
+.clear-btn {
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.clear-btn:hover {
+    background: #e0e0e0;
 }
 
 /* 消息列表 */
@@ -409,6 +431,59 @@ body {
 .send-btn:disabled {
     background: #ccc;
     cursor: not-allowed;
+}
+
+/* 名称配置区域 */
+.name-config-area {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: #fafafa;
+    border-top: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.name-config-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.name-config-row label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.name-config-row input {
+    width: 90px;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.name-config-row input:focus {
+    border-color: var(--primary-color);
+}
+
+.save-names-btn {
+    padding: 4px 12px;
+    background: #f0f0f0;
+    color: var(--text-secondary);
+    border: none;
+    border-radius: 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+    white-space: nowrap;
+}
+
+.save-names-btn:hover {
+    background: #e0e0e0;
 }
 
 /* ============================================================

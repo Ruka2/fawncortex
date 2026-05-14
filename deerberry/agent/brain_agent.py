@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from datetime import datetime
@@ -9,6 +10,8 @@ from agentscope.formatter import OpenAIChatFormatter
 from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
 from agentscope.message import Msg
+
+from deerberry.base.simple_agent import estimate_tokens
 
 from deerberry.tools.search_memory import (
     set_memory_manager,
@@ -225,8 +228,10 @@ class BrainAgent:
             self._stream_buffer = ""
             self._last_stream_sync_len = 0
             self._sub_status = "reasoning"
+            reasoning_start = time.perf_counter()
             # 调用原始方法
             output = await _original_reasoning(*args, **kwargs)
+            reasoning_end = time.perf_counter()
             # post-reasoning（内联原 _hook_post_reasoning 逻辑）
             try:
                 self._current_iter += 1
@@ -255,6 +260,9 @@ class BrainAgent:
                     "reasoning_text": text,
                     "tool_calls": tool_uses,
                     "timestamp": datetime.now().isoformat(),
+                    "reasoning_start_ts": reasoning_start,
+                    "reasoning_end_ts": reasoning_end,
+                    "reasoning_sec": round(reasoning_end - reasoning_start, 3),
                     "acting": None,
                 })
                 print(
@@ -271,7 +279,9 @@ class BrainAgent:
         _original_acting = agent._acting
 
         async def _wrapped_acting(*args, **kwargs):
+            acting_start = time.perf_counter()
             output = await _original_acting(*args, **kwargs)
+            acting_end = time.perf_counter()
             # post-acting（内联原 _hook_post_acting 逻辑）
             try:
                 # AgentScope 以位置参数调用 _acting(tool_call)，所以从 args[0] 获取
@@ -292,6 +302,9 @@ class BrainAgent:
                         "tool_name": tool_name,
                         "tool_input": tool_input,
                         "timestamp": datetime.now().isoformat(),
+                        "acting_start_ts": acting_start,
+                        "acting_end_ts": acting_end,
+                        "acting_sec": round(acting_end - acting_start, 3),
                     }
                     print(
                         f"[BrainAgent] 🔧 第 {self._current_iter} 轮 acting 完成"
@@ -466,6 +479,27 @@ class BrainAgent:
         self._stream_buffer = ""
         self._is_streaming_reasoning = False
         self._last_stream_sync_len = 0
+        # 重置 Token 计数
+        self._last_input_tokens = 0
+        self._last_output_tokens = 0
+        self._last_llm_call_count = 0
+
+    def reset_token_stats(self) -> None:
+        """重置本轮 Token 和调用计数。"""
+        self._last_input_tokens = 0
+        self._last_output_tokens = 0
+        self._last_llm_call_count = 0
+
+    def get_token_stats(self) -> dict:
+        """获取最近一次 think() 的 Token 统计。
+
+        LLM 调用次数 = ReAct 循环轮数（每次 reasoning 调用一次 LLM）。
+        """
+        return {
+            "input_tokens": getattr(self, "_last_input_tokens", 0),
+            "output_tokens": getattr(self, "_last_output_tokens", 0),
+            "llm_call_count": self._current_iter,
+        }
 
     def get_react_snapshot(self) -> dict:
         """获取当前 ReAct 循环的快照。
@@ -517,11 +551,34 @@ class BrainAgent:
         # 每轮思考前：清空记忆检索缓存
         clear_last_retrieved_memories()
 
+        # ── Token 与调用计数准备 ──
         self.reset_react_tracker()
+        self._last_input_tokens = 0
+        self._last_output_tokens = 0
+
+        # 估算输入 Token（system prompt + memory + user_msg）
+        # 【修复】使用 run_in_executor 避免 tiktoken 阻塞事件循环
+        try:
+            memory_msgs = await self.agent.memory.get_memory()
+            memory_text = ""
+            for m in memory_msgs:
+                memory_text += BrainAgent._extract_text_and_thinking(m)
+            input_text = (
+                self.DEFAULT_SYS_PROMPT + "\n" + memory_text + "\n"
+                + BrainAgent._extract_text_and_thinking(user_msg)
+            )
+            loop = asyncio.get_event_loop()
+            self._last_input_tokens = await loop.run_in_executor(
+                None, estimate_tokens, input_text
+            )
+        except Exception:
+            pass
+
         self._react_start_ts = time.time()
         self._think_start_ts = time.time()
 
         result = await self.agent.reply(user_msg)
+
         text = BrainAgent._extract_text_and_thinking(result)
 
         # ── Debug: 打印 BrainAgent 最终输出 ──
@@ -541,6 +598,18 @@ class BrainAgent:
                     print(f"  - 轮次 {it['iter']}: reasoning → acting({acting['tool_name']})")
                 else:
                     print(f"  - 轮次 {it['iter']}: reasoning（无工具调用）")
+
+        # 估算输出 Token（所有 reasoning + 最终 insight）
+        try:
+            output_text = text
+            for it in self._iter_results:
+                output_text += it.get("reasoning_text", "")
+            loop = asyncio.get_event_loop()
+            self._last_output_tokens = await loop.run_in_executor(
+                None, estimate_tokens, output_text
+            )
+        except Exception:
+            pass
 
         data = {
             "insight": text.strip(),

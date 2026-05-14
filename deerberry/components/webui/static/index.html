@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deerberry Web UI</title>
+    <title>FawnCortex智能体对话系统</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <div class="app-container">
         <!-- 顶部标题栏 -->
         <header class="app-header">
-            <div class="header-title">🦌 Deerberry 多智能体对话系统</div>
+            <div class="header-title">FawnCortex 智能体对话系统</div>
             <div class="header-status">
                 <span id="connection-status" class="status-dot disconnected">未连接</span>
             </div>
@@ -22,12 +22,28 @@
             <div class="main-chat">
                 <div class="chat-header">
                     <span class="chat-title">主聊天窗</span>
-                    <span id="round-indicator" class="round-badge">Round 0</span>
+                    <div class="chat-header-actions">
+                        <button id="clear-chat-btn" class="clear-btn" title="清空所有智能体短期记忆">清空聊天记录</button>
+                        <span id="round-indicator" class="round-badge">Round 0</span>
+                    </div>
                 </div>
                 <div id="chat-messages" class="chat-messages"></div>
                 <div class="chat-input-area">
                     <textarea id="user-input" placeholder="输入消息，按 Enter 发送..." rows="2"></textarea>
                     <button id="send-btn" class="send-btn">发送</button>
+                </div>
+
+                <!-- 名称配置区域 -->
+                <div class="name-config-area">
+                    <div class="name-config-row">
+                        <label for="agent-name-input">Agent 名称</label>
+                        <input type="text" id="agent-name-input" value="Ruka" placeholder="Agent 名称">
+                    </div>
+                    <div class="name-config-row">
+                        <label for="user-name-input">用户名称</label>
+                        <input type="text" id="user-name-input" value="鹿过" placeholder="用户名称">
+                    </div>
+                    <button id="save-names-btn" class="save-names-btn">💾 保存名称</button>
                 </div>
             </div>
 

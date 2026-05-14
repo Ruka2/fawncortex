@@ -70,6 +70,11 @@ function cacheDOM() {
 
     // ReflectionAgent
     DOM.reflectionList = document.getElementById('reflection-list');
+
+    // 名称配置
+    DOM.agentNameInput = document.getElementById('agent-name-input');
+    DOM.userNameInput = document.getElementById('user-name-input');
+    DOM.saveNamesBtn = document.getElementById('save-names-btn');
 }
 
 // ============================================================
@@ -176,7 +181,11 @@ function handleServerMessage(data) {
             handleError(payload);
             break;
         case 'system':
-            addSystemMessage(payload.text || payload.message || '系统消息');
+            if (payload.status === 'reset') {
+                handleReset();
+            } else {
+                addSystemMessage(payload.text || payload.message);
+            }
             break;
         case 'chat_context':
             handleChatContext(payload);
@@ -429,6 +438,62 @@ function handleInterrupt() {
     stopCurrentAudio();
     AppState.audioQueue = [];
     AppState.ttsBubbleQueue = [];
+}
+
+function handleReset() {
+    // """处理服务器 reset 事件：清空前端所有 UI 状态。"""
+    console.log('[UI] 收到 reset 事件，清空前端状态');
+
+    // 1. 清空主聊天窗口
+    if (DOM.chatMessages) {
+        DOM.chatMessages.innerHTML = '';
+    }
+
+    // 2. 清空全局状态数组
+    AppState.chatHistory = [];
+    AppState.emotionHistory = [];
+    AppState.reflectionHistory = [];
+    AppState.brainSnapshots = [];
+    AppState.brainRenderedIters = 0;
+    AppState.chatContext = [];
+    AppState.chatContextLength = 0;
+    AppState.chatLastResponseTime = 0;
+    AppState.chatReflectionAction = '-';
+    AppState.ttsBubbleQueue = [];
+    AppState.roundTtsAudioDuration = 0;
+    AppState.currentRound = 0;
+
+    // 3. 重置 BrainAgent 面板
+    updateBrainStatus('idle');
+    if (DOM.brainIters) DOM.brainIters.textContent = '0';
+    if (DOM.brainElapsed) DOM.brainElapsed.textContent = '0s';
+    if (DOM.brainTools) DOM.brainTools.textContent = '否';
+    if (DOM.brainToolCount) DOM.brainToolCount.textContent = '0';
+    if (DOM.brainReasoning) DOM.brainReasoning.innerHTML = '';
+    if (DOM.brainToolCalls) DOM.brainToolCalls.innerHTML = '';
+
+    // 4. 重置 ChatAgent 面板
+    if (DOM.chatContextLength) DOM.chatContextLength.textContent = '0';
+    if (DOM.chatResponseTime) DOM.chatResponseTime.textContent = '0s';
+    if (DOM.chatReflection) DOM.chatReflection.textContent = '-';
+    if (DOM.chatContextList) DOM.chatContextList.innerHTML = '';
+
+    // 5. 重置 EmotionAgent 面板
+    if (DOM.emotionRound) DOM.emotionRound.textContent = '-';
+    if (DOM.emotionElapsed) DOM.emotionElapsed.textContent = '0s';
+    if (DOM.emotionHistory) DOM.emotionHistory.innerHTML = '';
+
+    // 6. 重置 ReflectionAgent 面板
+    if (DOM.reflectionList) DOM.reflectionList.innerHTML = '';
+
+    // 7. 重置 Round 指示器
+    if (DOM.roundIndicator) DOM.roundIndicator.textContent = 'Round 0';
+
+    // 8. 停止音频
+    stopCurrentAudio();
+    AppState.audioQueue = [];
+
+    addSystemMessage('🗑️ 所有智能体短期记忆已清空');
 }
 
 function handleError(data) {
@@ -884,6 +949,43 @@ document.addEventListener('DOMContentLoaded', () => {
                 e.preventDefault();
                 sendMessage();
             }
+        });
+    }
+
+    // 清空聊天记录按钮
+    const clearBtn = document.getElementById('clear-chat-btn');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            if (!AppState.connected) {
+                alert('未连接到服务器');
+                return;
+            }
+            if (confirm('确定要清空所有智能体的短期记忆和聊天记录吗？')) {
+                AppState.ws.send(JSON.stringify({
+                    type: 'reset',
+                }));
+            }
+        });
+    }
+
+    // 名称配置保存按钮
+    if (DOM.saveNamesBtn) {
+        DOM.saveNamesBtn.addEventListener('click', () => {
+            if (!AppState.connected) {
+                alert('未连接到服务器');
+                return;
+            }
+            const agentName = DOM.agentNameInput ? DOM.agentNameInput.value.trim() : '';
+            const userName = DOM.userNameInput ? DOM.userNameInput.value.trim() : '';
+            if (!agentName || !userName) {
+                alert('名称不能为空');
+                return;
+            }
+            AppState.ws.send(JSON.stringify({
+                type: 'set_names',
+                agent_name: agentName,
+                user_name: userName,
+            }));
         });
     }
 

@@ -33,7 +33,7 @@ from main8_server import DeerberryEngine, create_engine
 # FastAPI 应用
 # =============================================================================
 
-app = FastAPI(title="Deerberry Web UI", version="1.0.0")
+app = FastAPI(title="FawnCortex智能体对话系统", version="1.0.0")
 
 # 静态文件目录
 STATIC_DIR = Path(__file__).parent / "deerberry" / "components" / "webui" / "static"
@@ -65,7 +65,7 @@ async def index():
     html_path = STATIC_DIR / "index.html"
     if html_path.exists():
         return html_path.read_text(encoding="utf-8")
-    return HTMLResponse(content="<h1>Deerberry Web UI</h1><p>index.html not found</p>", status_code=404)
+    return HTMLResponse(content="<h1>FawnCortex智能体对话系统</h1><p>index.html not found</p>", status_code=404)
 
 
 # =============================================================================
@@ -154,7 +154,7 @@ async def websocket_endpoint(websocket: WebSocket):
         # 通知客户端已连接
         await manager.send_json({
             "type": "system",
-            "data": {"status": "connected", "message": "已连接到 Deerberry 引擎"}
+            "data": {"status": "connected", "message": "✅ 已连接到对话系统"}
         })
 
         while True:
@@ -181,8 +181,33 @@ async def websocket_endpoint(websocket: WebSocket):
                         "data": {"message": "输入不能为空"}
                     })
 
+            elif msg_type == "reset":
+                await engine.reset_memory()
+                await manager.send_json({
+                    "type": "system",
+                    "data": {"status": "reset_ack", "message": "记忆已清空"}
+                })
+
             elif msg_type == "ping":
                 await manager.send_json({"type": "pong", "data": {}})
+
+            elif msg_type == "set_names":
+                agent_name = msg.get("agent_name", "").strip()
+                user_name = msg.get("user_name", "").strip()
+                if agent_name and user_name:
+                    await engine.update_names(agent_name, user_name)
+                    await manager.send_json({
+                        "type": "system",
+                        "data": {
+                            "status": "names_updated",
+                            "message": f"名称已更新: Agent={agent_name}, User={user_name}",
+                        },
+                    })
+                else:
+                    await manager.send_json({
+                        "type": "error",
+                        "data": {"message": "Agent 名称和用户名不能为空"},
+                    })
 
             else:
                 await manager.send_json({

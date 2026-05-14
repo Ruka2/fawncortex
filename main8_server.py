@@ -73,8 +73,11 @@ from deerberry.logger.latency_tracker import LatencyTracker
 from deerberry.logger.logger import enable_file_logging
 
 
-AGENT_NAME = "Ruka"
-USER_NAME = "鹿过"
+# AGENT_NAME = "Ruka"
+# USER_NAME = "鹿过"
+
+AGENT_NAME = "翠花"
+USER_NAME = "李华"
 
 
 # =============================================================================
@@ -188,13 +191,17 @@ class WebOutputScheduler:
         })
 
     async def interrupt(self) -> None:
-        """打断当前播报并清空队列。"""
+        """打断当前播报并清空队列。
+
+        【关键修复】TTS 合成在线程池中执行同步调用，cancel() 无法中断线程池任务。
+        因此使用 asyncio.wait_for 设置 5 秒超时，避免永远等待。
+        """
         self.tts.stop()
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
             try:
-                await self._current_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._current_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
             self._current_task = None
         while not self._queue.empty():
@@ -367,6 +374,11 @@ class DeerberryEngine:
         self.round_num = 0
         self.current_emotion = "smile"
 
+        # 名称配置（可由前端动态修改）
+        self.agent_name = AGENT_NAME
+        self.user_name = USER_NAME
+        self.chat_model = None
+
         # ChatAgent 面板持久化状态（避免 midway/brain_summary 覆盖 front_stage 信息）
         self._last_chat_elapsed: float = 0.0
         self._last_reflection_action: str = "-"
@@ -382,6 +394,25 @@ class DeerberryEngine:
         """外部调用：发送用户输入到引擎。"""
         await self.user_input_queue.put(text)
 
+    async def update_names(self, agent_name: str, user_name: str) -> None:
+        """更新 Agent 名称和用户名，重新创建 ChatAgent 以应用新名称。
+
+        保留旧 ChatAgent 的 memory，避免对话上下文丢失。
+        """
+        old_memory = self.chat_agent.memory if self.chat_agent else None
+        self.agent_name = agent_name
+        self.user_name = user_name
+
+        if self.chat_model is not None:
+            self.chat_agent = ChatAgent(
+                model=self.chat_model,
+                agent_name=agent_name,
+                memory=old_memory,
+            )
+            print(f"[Engine] 📝 名称已更新: Agent={agent_name}, User={user_name}")
+        else:
+            print(f"[Engine] ⚠️ chat_model 未初始化，无法更新 Agent 名称")
+
     async def start(self) -> None:
         """启动引擎（初始化所有组件 + 启动主循环）。"""
         self._running = True
@@ -396,6 +427,60 @@ class DeerberryEngine:
                 await self._engine_task
             except asyncio.CancelledError:
                 pass
+
+    async def reset_memory(self) -> None:
+        """清空所有智能体的短期记忆，重置会话状态。
+
+        用于：
+        1. 用户手动点击"清空聊天记录"
+        2. 自动评测时每个 jsonl 样本作为新场景前重置
+        """
+        print("[DeerberryEngine] 🔄 正在重置所有智能体短期记忆...")
+
+        # 1. 中断当前输出调度器（清空 TTS 队列）
+        await self.scheduler.interrupt()
+
+        # 2. 取消当前 Brain 思考任务
+        await self.brain_bg._cancel_current_think()
+
+        # 3. 清空各 Agent 的短期记忆（Working Memory）
+        await self.chat_agent.memory.clear()
+        await self.emotion_agent.memory.clear()
+        await self.reflection_agent.memory.clear()
+        await self.brain_agent.agent.memory.clear()
+
+        # 4. 重置 BrainAgent 的 ReAct 追踪器
+        self.brain_agent.reset_react_tracker()
+
+        # 5. 清空 BackgroundBrainAgent 的输出队列（丢弃残留结果）
+        while not self.brain_bg.output_queue.empty():
+            try:
+                self.brain_bg.output_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        # 6. 清空 EventBus 中 BrainAgent 的输入队列
+        while not self.brain_bg.input_queue.empty():
+            try:
+                self.brain_bg.input_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        # 7. 重置轮次计数器
+        self.round_num = 0
+
+        # 8. 重置前端状态相关缓存
+        self._last_chat_elapsed = 0.0
+        self._last_reflection_action = "-"
+        self.current_emotion = "smile"
+
+        # 9. 发射 reset 事件到前端（通知前端清空 UI）
+        await self.emitter.emit("system", {
+            "status": "reset",
+            "message": "所有智能体短期记忆已清空",
+        })
+
+        print("[DeerberryEngine] ✅ 重置完成")
 
     # ── 内部初始化 ──
 
@@ -421,8 +506,8 @@ class DeerberryEngine:
         # 2. 长期记忆
         memory_cfg = config.LLM_ROLE_CONFIG.get("memory", {})
         self.long_term_memory = create_long_term_memory(
-            agent_name=AGENT_NAME,
-            user_name=USER_NAME,
+            agent_name=self.agent_name,
+            user_name=self.user_name,
             vector_store_path=config.MEM0_VECTOR_STORE_PATH,
             history_db_path=config.MEM0_HISTORY_DB_PATH,
             llm_model_name=memory_cfg.get("model_name") or config.LLM_MODEL_NAME,
@@ -441,8 +526,11 @@ class DeerberryEngine:
         brain_model = build_model_for_role("brain", stream=config.STREAM)
         reflection_model = build_model_for_role("reflection", stream=config.STREAM)
 
+        # 保存 chat_model，供 update_names 重新创建 ChatAgent 时使用
+        self.chat_model = chat_model
+
         # 4. 初始化核心智能体
-        self.chat_agent = ChatAgent(model=chat_model, agent_name=AGENT_NAME)
+        self.chat_agent = ChatAgent(model=chat_model, agent_name=self.agent_name)
         self.emotion_agent = EmotionAgent(model=emotion_model)
 
         toolkit = Toolkit()
@@ -497,13 +585,14 @@ class DeerberryEngine:
                         continue
 
                     # 取消上一轮的 midway_watcher 和 monitor
+                    # 【关键修复】midway 可能卡在 LLM 调用中，cancel() 不生效，增加 5 秒超时
                     if current_midway_task and not current_midway_task.done():
                         if current_stop_event:
                             current_stop_event.set()
                         current_midway_task.cancel()
                         try:
-                            await current_midway_task
-                        except asyncio.CancelledError:
+                            await asyncio.wait_for(current_midway_task, timeout=5.0)
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
                             pass
                         current_midway_task = None
                         current_stop_event = None
@@ -511,8 +600,8 @@ class DeerberryEngine:
                     if current_monitor_task and not current_monitor_task.done():
                         current_monitor_task.cancel()
                         try:
-                            await current_monitor_task
-                        except asyncio.CancelledError:
+                            await asyncio.wait_for(current_monitor_task, timeout=3.0)
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
                             pass
                         current_monitor_task = None
 
@@ -521,6 +610,13 @@ class DeerberryEngine:
 
                     # 重置本轮 TTS 统计
                     self.scheduler.reset_tts_stats()
+
+                    # 重置各 Agent 的 Token 统计
+                    for agent in [self.chat_agent, self.emotion_agent, self.reflection_agent]:
+                        if agent and hasattr(agent, 'reset_token_stats'):
+                            agent.reset_token_stats()
+                    if self.brain_agent and hasattr(self.brain_agent, 'reset_token_stats'):
+                        self.brain_agent.reset_token_stats()
 
                     await self.emitter.emit("round_start", {
                         "round_id": round_num,
@@ -598,7 +694,7 @@ class DeerberryEngine:
                     )
 
                     # ── 等待 BrainAgent 思考结果 ──
-                    BRAIN_TIMEOUT = 360.0
+                    BRAIN_TIMEOUT = 300.0  # 从 360 秒缩短为 120 秒，避免过长时间阻塞
                     try:
                         brain_output = await asyncio.wait_for(
                             self.brain_bg.output_queue.get(),
@@ -606,24 +702,20 @@ class DeerberryEngine:
                         )
 
                         # Brain 完成后停止 midway 和 monitor
+                        # 【关键修复】所有 await 都增加超时，防止卡死
                         if current_stop_event:
                             current_stop_event.set()
                         if current_midway_task and not current_midway_task.done():
                             try:
-                                await asyncio.wait_for(current_midway_task, timeout=3.0)
-                            except asyncio.TimeoutError:
-                                current_midway_task.cancel()
-                                try:
-                                    await current_midway_task
-                                except asyncio.CancelledError:
-                                    pass
+                                await asyncio.wait_for(current_midway_task, timeout=5.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
+                                pass
                         current_midway_task = None
                         current_stop_event = None
                         if current_monitor_task and not current_monitor_task.done():
-                            current_monitor_task.cancel()
                             try:
-                                await current_monitor_task
-                            except asyncio.CancelledError:
+                                await asyncio.wait_for(current_monitor_task, timeout=3.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
                                 pass
                         current_monitor_task = None
 
@@ -659,16 +751,16 @@ class DeerberryEngine:
                         if current_midway_task and not current_midway_task.done():
                             current_midway_task.cancel()
                             try:
-                                await current_midway_task
-                            except asyncio.CancelledError:
+                                await asyncio.wait_for(current_midway_task, timeout=5.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
                                 pass
                         current_midway_task = None
                         current_stop_event = None
                         if current_monitor_task and not current_monitor_task.done():
                             current_monitor_task.cancel()
                             try:
-                                await current_monitor_task
-                            except asyncio.CancelledError:
+                                await asyncio.wait_for(current_monitor_task, timeout=3.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
                                 pass
                         current_monitor_task = None
 
@@ -722,12 +814,26 @@ class DeerberryEngine:
                         end_ts=time.perf_counter(),
                     )
                     report = self.latency_tracker.finish_round()
+
+                    # 收集各 Agent 的 Token 统计
+                    token_stats = {}
+                    for name, agent in [
+                        ("chat", self.chat_agent),
+                        ("emotion", self.emotion_agent),
+                        ("reflection", self.reflection_agent),
+                    ]:
+                        if agent and hasattr(agent, 'get_token_stats'):
+                            token_stats[name] = agent.get_token_stats()
+                    if self.brain_agent and hasattr(self.brain_agent, 'get_token_stats'):
+                        token_stats["brain"] = self.brain_agent.get_token_stats()
+
                     await self.emitter.emit("round_end", {
                         "round_id": round_num,
                         "elapsed_sec": round(round_elapsed, 2),
                         "user_perceived_s": round(report.user_perceived_s, 2) if report else 0.0,
                         "tts_total_proc_s": round(tts_total_proc, 2),
                         "round_without_tts_s": round(round_without_tts, 2),
+                        "token_stats": token_stats,
                     })
 
                 except asyncio.CancelledError:
@@ -785,7 +891,9 @@ class DeerberryEngine:
             original_judge = self.reflection_agent.judge_each_chat
 
             async def patched_judge(user_input, agent_response, chat_history):
+                judge_start = time.perf_counter()
                 result = await original_judge(user_input, agent_response, chat_history)
+                judge_elapsed = time.perf_counter() - judge_start
                 self._last_reflection_action = result.action
                 # 序列化 chat_history 供前端展示
                 history = []
@@ -802,6 +910,7 @@ class DeerberryEngine:
                     "agent_response": agent_response,
                     "source": "midway",
                     "chat_history": history,
+                    "elapsed": round(judge_elapsed, 3),
                 })
                 return result
 
@@ -815,7 +924,7 @@ class DeerberryEngine:
                     emotion=emotion,
                     threshold=threshold,
                     stop_event=stop_event,
-                    user_name=USER_NAME,
+                    user_name=self.user_name,
                     user_input=user_input,
                 )
             finally:
@@ -859,7 +968,9 @@ class DeerberryEngine:
             original_judge = self.reflection_agent.judge_each_chat
 
             async def patched_judge(user_input, agent_response, chat_history):
+                judge_start = time.perf_counter()
                 result = await original_judge(user_input, agent_response, chat_history)
+                judge_elapsed = time.perf_counter() - judge_start
                 self._last_reflection_action = result.action
                 # 序列化 chat_history 供前端展示
                 history = []
@@ -876,6 +987,7 @@ class DeerberryEngine:
                     "agent_response": agent_response,
                     "source": source_label,
                     "chat_history": history,
+                    "elapsed": round(judge_elapsed, 3),
                 })
                 return result
 
@@ -890,7 +1002,7 @@ class DeerberryEngine:
                     summary_thought=summary_thought,
                     brain_bg=self.brain_bg,
                     source_label=source_label,
-                    user_name=USER_NAME,
+                    user_name=self.user_name,
                 )
             finally:
                 self.reflection_agent.judge_each_chat = original_judge
