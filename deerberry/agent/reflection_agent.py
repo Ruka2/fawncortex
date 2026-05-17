@@ -28,9 +28,15 @@ from agentscope.formatter import OpenAIChatFormatter
 from deerberry.base.simple_agent import SimpleAgent
 from deerberry.pipeline.event_controller import ThoughtEvent, InterventionEvent
 
+import sys
+from pathlib import Path
+from typing import Optional
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import config
 
 
-### 中间汇报（Midway Intervention）配置
+
+### 中间汇报（Midway Intervention）配置 （FIXME: 这些参数设置都是暂时的，随时可以被替换走）
 # 动态阈值基础值（秒）
 MIDWAY_BASE_THRESHOLD = float(3.0)
 # 动态阈值上限（秒）
@@ -120,17 +126,17 @@ class ReflectionAgent(SimpleAgent):
         formula: threshold = BASE + chat_length * FACTOR, capped at MAX
         """
         
-        base = MIDWAY_BASE_THRESHOLD
-        max_threshold = MIDWAY_MAX_THRESHOLD
-        factor = MIDWAY_THRESHOLD_FACTOR
+        # base = MIDWAY_BASE_THRESHOLD
+        # max_threshold = MIDWAY_MAX_THRESHOLD
+        # factor = MIDWAY_THRESHOLD_FACTOR
 
-        chat_text = chat_result.get_text_content() if chat_result else ""
-        token_count = len(chat_text)  # 简化为字符数，后续可替换为真实 token 数
+        # chat_text = chat_result.get_text_content() if chat_result else ""
+        # token_count = len(chat_text)  # 简化为字符数，后续可替换为真实 token 数
 
-        threshold = base + token_count * factor
-        threshold = min(threshold, max_threshold)
+        # threshold = base + token_count * factor
+        # threshold = min(threshold, max_threshold)
         
-        threshold = float(5.0)  # FIXME: 测试功能时会采用这样的时间戳
+        threshold = config.BRAIN_CUT_TIME_DURATION  # FIXME: 测试功能时会采用这样的时间戳
 
         return threshold
 

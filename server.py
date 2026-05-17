@@ -139,6 +139,7 @@ async def websocket_endpoint(websocket: WebSocket):
         "reflection_judgment",
         "output_scheduled",
         "tts_text",
+        "tts_started",
         "tts_audio",
         "interrupt",
         "round_start",

@@ -59,6 +59,22 @@ from deerberry.tools.paper_search import (
 )
 from deerberry.tools.get_current_time import get_current_time
 from deerberry.components.voice.tts import SiliconFlowCosyVoice
+from deerberry.components.body.vts_controller import VTSController
+from deerberry.components.body.emotion_animate import (
+    animate_open_mouse,
+    animate_smile,
+    animate_angry,
+    animate_wink_left,
+    animate_wink_right,
+    animate_close_eyes,
+    animate_confused,
+    animate_lean_left,
+    animate_lean_right,
+    animate_look_up,
+    animate_look_down,
+    animate_surprised,
+    animate_smirk,
+)
 from deerberry.pipeline.output_scheduler import OutputScheduler, Priority, OutputTask
 from deerberry.pipeline.event_controller import (
     EventBus,
@@ -67,17 +83,16 @@ from deerberry.pipeline.event_controller import (
 )
 from deerberry.pipeline.front_stage_pipeline import FrontStagePipeline
 from deerberry.pipeline.back_stage_midway import midway_watcher, brain_summary
-from deerberry.tools.control_vts import express_emotion
 
 from deerberry.logger.latency_tracker import LatencyTracker
 from deerberry.logger.logger import enable_file_logging
 
 
-# AGENT_NAME = "Ruka"
-# USER_NAME = "鹿过"
+AGENT_NAME = "Ruka"
+USER_NAME = "鹿过"
 
-AGENT_NAME = "翠花"
-USER_NAME = "李华"
+# AGENT_NAME = "翠花"
+# USER_NAME = "李华"
 
 
 # =============================================================================
@@ -140,13 +155,32 @@ class EventEmitter:
 # Web UI 适配的输出调度器
 # =============================================================================
 
+# 表情名称 -> 动画函数映射（neural 为 None，由 idle 循环接管）
+_EMOTION_ANIMATION_MAP = {
+    "open_mouse": animate_open_mouse,
+    "smile": animate_smile,
+    "angry": animate_angry,
+    "wink_left": animate_wink_left,
+    "wink_right": animate_wink_right,
+    "close_eyes": animate_close_eyes,
+    "confused": animate_confused,
+    "lean_left": animate_lean_left,
+    "lean_right": animate_lean_right,
+    "look_up": animate_look_up,
+    "look_down": animate_look_down,
+    "surprised": animate_surprised,
+    "smirk": animate_smirk,
+    "neural": None,
+}
+
+
 class WebOutputScheduler:
     """Web UI 适配的输出调度器。
 
     保留原有 OutputScheduler 的核心逻辑：
     - asyncio.PriorityQueue 优先级队列
     - 打断/清空能力
-    - VTS 表情触发（express_emotion）
+    - VTS 表情触发（与 TTS 并行执行）
 
     关键差异：
     - TTS 不再本地 sd.play() 播放，而是将音频数据通过 EventEmitter 发送给前端
@@ -157,15 +191,18 @@ class WebOutputScheduler:
         self,
         tts: SiliconFlowCosyVoice,
         emitter: EventEmitter,
+        vts: Optional[VTSController] = None,
         latency_tracker: Optional[LatencyTracker] = None,
     ) -> None:
         self.tts = tts
         self.emitter = emitter
+        self.vts = vts
         self.latency_tracker = latency_tracker
         self._queue: asyncio.PriorityQueue[tuple[int, int, OutputTask]] = asyncio.PriorityQueue()
         self._seq_counter = 0
         self._speaking_lock = asyncio.Lock()
         self._current_task: Optional[asyncio.Task] = None
+        self._current_emotion_task: Optional[asyncio.Task] = None
         self._running = True
         self._tts_total_proc_s: float = 0.0  # 本轮 TTS 合成总耗时
 
@@ -173,6 +210,7 @@ class WebOutputScheduler:
         self,
         text: str,
         emotion: str,
+        tone: str,
         source: str,
         priority: Priority = Priority.NORMAL,
     ) -> None:
@@ -180,13 +218,14 @@ class WebOutputScheduler:
         if not text or not text.strip():
             return
         self._seq_counter += 1
-        task = OutputTask(priority, text, emotion, source, self._seq_counter)
+        task = OutputTask(priority, text, emotion, tone, source, self._seq_counter)
         await self._queue.put((-priority.value, self._seq_counter, task))
         # 通知前端：该消息已进入输出队列
         await self.emitter.emit("output_scheduled", {
             "text": text,
             "source": source,
             "emotion": emotion,
+            "tone": tone,
             "priority": priority.name,
         })
 
@@ -197,13 +236,18 @@ class WebOutputScheduler:
         因此使用 asyncio.wait_for 设置 5 秒超时，避免永远等待。
         """
         self.tts.stop()
-        if self._current_task and not self._current_task.done():
-            self._current_task.cancel()
-            try:
-                await asyncio.wait_for(self._current_task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
-            self._current_task = None
+
+        # 取消当前 TTS 和表情任务
+        for attr in ("_current_task", "_current_emotion_task"):
+            task = getattr(self, attr)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                setattr(self, attr, None)
+
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -223,27 +267,34 @@ class WebOutputScheduler:
                 if self.latency_tracker:
                     self.latency_tracker.mark_first_sound()
 
-                # VTS 表情触发（保留原有逻辑）
-                try:
-                    express_emotion(action=task.emotion, duration=10.0, intensity=1.0)
-                except Exception as e:
-                    pass  # VTS 未连接时不影响主流程
-
-                # 通知前端：即将播报这段文本
+                # 同时启动 TTS 合成和 VTS 表情动画
                 await self.emitter.emit("tts_text", {
                     "text": task.text,
                     "source": task.source,
                     "emotion": task.emotion,
+                    "tone": task.tone,
                 })
 
-                # TTS 合成并发送音频到前端
-                self._current_task = asyncio.create_task(self._speak_async(task))
+                tts_task = asyncio.create_task(
+                    self._speak_async(task.text, task.tone, task.emotion)
+                )
+                emotion_task = asyncio.create_task(
+                    self._express_emotion_async(task.emotion)
+                )
+                self._current_task = tts_task
+                self._current_emotion_task = emotion_task
+
                 try:
-                    await self._current_task
+                    await asyncio.gather(tts_task, emotion_task)
                 except asyncio.CancelledError:
-                    pass
+                    # 确保子任务都被清理
+                    for t in (tts_task, emotion_task):
+                        if not t.done():
+                            t.cancel()
+                    await asyncio.gather(tts_task, emotion_task, return_exceptions=True)
                 finally:
                     self._current_task = None
+                    self._current_emotion_task = None
 
     def reset_tts_stats(self) -> None:
         """新一轮开始时重置 TTS 统计。"""
@@ -253,46 +304,73 @@ class WebOutputScheduler:
         """获取本轮 TTS 合成总耗时。"""
         return self._tts_total_proc_s
 
-    async def _speak_async(self, task: OutputTask) -> None:
-        """在线程池中执行 TTS 合成，将音频通过事件发送给前端。"""
-        loop = asyncio.get_event_loop()
-        tts_start = time.perf_counter()
+    async def _express_emotion_async(self, emotion: str, duration: float = 5.0) -> None:
+        """异步执行 VTS 表情动画。
+
+        Args:
+            emotion: 表情动作名称（需与 _EMOTION_ANIMATION_MAP 的 key 对应）。
+            duration: 动画持续时间（秒），默认 5.0 秒。
+        """
+        if self.vts is None:
+            return
+
+        # 设置当前表情的基础嘴型目标值（供 lip sync 叠加）
+        if hasattr(self.vts, "_mouth_target"):
+            from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+            self.vts._mouth_target = EMOTION_MOUTH_BASE.get(emotion, 0.05)
+
+        anim_func = _EMOTION_ANIMATION_MAP.get(emotion)
+        if anim_func is None:
+            return
         try:
-            audio_bytes = await loop.run_in_executor(
-                None,
-                lambda: self.tts.stream_synthesize(
-                    text=task.text.strip(),
-                    speed=1.0,
-                    gain=0.0,
-                    response_format="mp3",
-                    play=False,  # 关键：不在本地播放
-                ),
-            )
-            tts_elapsed = time.perf_counter() - tts_start
-            self._tts_total_proc_s += tts_elapsed
-            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-            await self.emitter.emit("tts_audio", {
-                "text": task.text,
-                "audio_base64": audio_b64,
-                "source": task.source,
-                "emotion": task.emotion,
-                "mime_type": "audio/mp3",
-            })
+            await anim_func(self.vts, duration=duration)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            print(f"⚠️  TTS 合成失败: {e}")
+            print(f"⚠️  表情动画执行失败 ({emotion}): {e}")
+        finally:
+            # 动画结束后重置嘴型目标值为自然状态
+            if hasattr(self.vts, "_mouth_target"):
+                self.vts._mouth_target = 0.05
 
-    # async def wait_until_idle(self) -> None:
-    #     """等待当前正在播放的 TTS 完成（如果有）。
+    async def _speak_async(self, text: str, tone: str = "", emotion: str = "neural") -> None:
+        """后端 PCM 流式播放 TTS，同时实时 lip sync 驱动嘴型。
+        通过事件通知前端播放开始/结束，用于 UI 动画同步。
+        """
+        from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+        base_mouth_open = EMOTION_MOUTH_BASE.get(emotion, 0.05)
 
-    #     用于 brain_summary 等场景，避免打断正在播放的 midway 语音。
-    #     """
-    #     if self._current_task and not self._current_task.done():
-    #         try:
-    #             await self._current_task
-    #         except asyncio.CancelledError:
-    #             pass
+        await self.emitter.emit("tts_started", {
+            "text": text,
+            "emotion": emotion,
+            "tone": tone,
+        })
+
+        tts_start = time.perf_counter()
+        try:
+            await self.tts.stream_synthesize(
+                text=text,
+                tone=tone,
+                speed=1.0,
+                gain=0.0,
+                response_format="pcm",
+                sample_rate=44100,
+                play=True,
+                vts_controller=self.vts,
+                base_mouth_open=base_mouth_open,
+            )
+            tts_elapsed = time.perf_counter() - tts_start
+            self._tts_total_proc_s += tts_elapsed
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"⚠️  TTS 合成/播放失败: {e}")
+        finally:
+            await self.emitter.emit("tts_finished", {
+                "text": text,
+                "emotion": emotion,
+                "tone": tone,
+            })
 
     async def stop(self) -> None:
         """停止调度器。"""
@@ -489,16 +567,26 @@ class DeerberryEngine:
         enable_file_logging()
         self.latency_tracker = LatencyTracker()
 
-        # 1. TTS + WebOutputScheduler
+        # 1. TTS + VTS + WebOutputScheduler
         tts = SiliconFlowCosyVoice(
             api_key=config.TTS_API_KEY,
             api_url=config.TTS_BASE_URL,
             model=config.TTS_MODEL_NAME,
             voice=config.TTS_VOICE,
         )
+
+        vts = VTSController()
+        try:
+            await vts.connect_and_auth()
+            print("[init] VTS 已连接并认证成功")
+        except Exception as e:
+            print(f"[init] ⚠️  VTS 连接失败，将以无 VTS 模式运行: {e}")
+            vts = None
+
         self.scheduler = WebOutputScheduler(
             tts=tts,
             emitter=self.emitter,
+            vts=vts,
             latency_tracker=self.latency_tracker,
         )
         asyncio.create_task(self.scheduler.run())
@@ -573,7 +661,7 @@ class DeerberryEngine:
         current_midway_task: Optional[asyncio.Task] = None
         current_stop_event: Optional[asyncio.Event] = None
         current_monitor_task: Optional[asyncio.Task] = None
-        current_emotion = "smile"
+        current_emotion = "neural"
 
         try:
             while self._running:
@@ -659,13 +747,12 @@ class DeerberryEngine:
 
                     # Emit EmotionAgent 结果
                     if emotion_result:
-                        action = EmotionAgent.parse_action(
+                        current_emotion, current_tone = EmotionAgent.parse_action(
                             emotion_result.get_text_content() or ""
                         )
-                        current_emotion = action
                         await self.emitter.emit("emotion_update", {
                             "round_id": round_num,
-                            "emotion": action,
+                            "emotion": current_emotion + " " + current_tone,
                             "raw": emotion_result.get_text_content() or "",
                             "elapsed": round(emotion_elapsed, 2),
                         })
@@ -673,11 +760,14 @@ class DeerberryEngine:
                     # ── 启动 midway_watcher ──
                     threshold = self.reflection_agent.compute_dynamic_threshold(chat_result)
                     current_stop_event = asyncio.Event()
+                    
+                    
                     current_midway_task = asyncio.create_task(
                         self._midway_wrapper(
                             round_id=round_num,
                             user_input=user_input,
                             emotion=current_emotion,
+                            tone=current_tone,
                             threshold=threshold,
                             stop_event=current_stop_event,
                         )
@@ -694,11 +784,11 @@ class DeerberryEngine:
                     )
 
                     # ── 等待 BrainAgent 思考结果 ──
-                    BRAIN_TIMEOUT = 300.0  # 从 360 秒缩短为 120 秒，避免过长时间阻塞
+                    # BRAIN_TIMEOUT = 300.0  # 从 360 秒的时间来完成大脑智能体的推理（非常宽松）FIXME: 将全局参数调整到代码顶部
                     try:
                         brain_output = await asyncio.wait_for(
                             self.brain_bg.output_queue.get(),
-                            timeout=BRAIN_TIMEOUT,
+                            timeout=config.BRAIN_TIMEOUT,
                         )
 
                         # Brain 完成后停止 midway 和 monitor
@@ -741,6 +831,7 @@ class DeerberryEngine:
                                 user_input=user_input,
                                 summary_thought=summary_thought,
                                 current_emotion=current_emotion,
+                                current_tone=current_tone,
                                 source_label="brain_summary",
                             )
 
@@ -857,6 +948,12 @@ class DeerberryEngine:
             except Exception as e:
                 pass
             try:
+                if getattr(self, "vts", None):
+                    print("[Shutdown] 正在关闭 VTS...")
+                    await self.vts.close()
+            except Exception as e:
+                pass
+            try:
                 await self.brain_bg.stop()
             except Exception as e:
                 pass
@@ -868,6 +965,7 @@ class DeerberryEngine:
         round_id: int,
         user_input: str,
         emotion: str,
+        tone: str,
         threshold: float,
         stop_event: asyncio.Event,
     ) -> None:
@@ -915,6 +1013,10 @@ class DeerberryEngine:
                 return result
 
             self.reflection_agent.judge_each_chat = patched_judge
+            
+            emotion = "neural"  # FIXME: 固定后续不再执行动作，避免混淆
+            tone = ""
+            
             try:
                 await midway_watcher(
                     brain_bg=self.brain_bg,
@@ -922,6 +1024,7 @@ class DeerberryEngine:
                     scheduler=self.scheduler,
                     reflection_agent=self.reflection_agent,
                     emotion=emotion,
+                    tone=tone,
                     threshold=threshold,
                     stop_event=stop_event,
                     user_name=self.user_name,
@@ -942,6 +1045,7 @@ class DeerberryEngine:
         user_input: str,
         summary_thought: str,
         current_emotion: str,
+        current_tone: str,
         source_label: str,
     ) -> None:
         """包装 brain_summary，捕获总结消息和 Reflection 判决并 emit 事件。"""
@@ -992,12 +1096,17 @@ class DeerberryEngine:
                 return result
 
             self.reflection_agent.judge_each_chat = patched_judge
+            
+            current_emotion = "neural"  # FIXME: 固定后续不再执行动作，避免混淆
+            current_tone = ""
+            
             try:
                 await brain_summary(
                     chat_agent=self.chat_agent,
                     scheduler=self.scheduler,
                     reflection_agent=self.reflection_agent,
                     current_emotion=current_emotion,
+                    current_tone=current_tone,
                     user_input=user_input,
                     summary_thought=summary_thought,
                     brain_bg=self.brain_bg,

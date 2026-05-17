@@ -171,6 +171,9 @@ function handleServerMessage(data) {
         case 'tts_text':
             handleTTSText(payload);
             break;
+        case 'tts_started':
+            handleTTSStarted(payload);
+            break;
         case 'tts_audio':
             handleTTSAudio(payload);
             break;
@@ -184,7 +187,10 @@ function handleServerMessage(data) {
             if (payload.status === 'reset') {
                 handleReset();
             } else {
-                addSystemMessage(payload.text || payload.message);
+                const sysText = payload.text || payload.message;
+                if (sysText) {
+                    addSystemMessage(sysText);
+                }
             }
             break;
         case 'chat_context':
@@ -243,7 +249,7 @@ function handleUserMessage(data) {
 
 function handleChatMessage(data) {
     const sourceTag = data.source || 'chat';
-    // 【关键改动】主聊天框气泡不再立即渲染，而是与 TTS 播放同步
+    // 主聊天框气泡不立即渲染，由 tts_started 事件触发（与后端 TTS 播放同步）
 
     // 添加到 ChatAgent 上下文面板（右侧不受影响）
     AppState.chatHistory.push({
@@ -257,7 +263,7 @@ function handleChatMessage(data) {
 }
 
 function handleMidwayMessage(data) {
-    // 【关键改动】主聊天框气泡不再立即渲染，而是与 TTS 播放同步
+    // 主聊天框气泡不立即渲染，由 tts_started 事件触发（与后端 TTS 播放同步）
 
     // 同时添加到 ChatAgent 上下文面板（右侧不受影响）
     AppState.chatHistory.push({
@@ -420,6 +426,16 @@ function handleOutputScheduled(data) {
 function handleTTSText(data) {
     // 可选：在前端显示即将播报的文本预览
     // console.log('[TTS] 即将播报:', data.text);
+}
+
+function handleTTSStarted(data) {
+    // 后端 TTS 开始播放时，从队列取出对应消息并渲染气泡（与 TTS 同步）
+    const bubbleData = AppState.ttsBubbleQueue.shift();
+    if (bubbleData) {
+        addChatBubble('assistant', bubbleData.text, bubbleData.round_id, bubbleData.source);
+    } else {
+        console.warn('[TTS] tts_started 触发但 ttsBubbleQueue 为空，可能 output_scheduled 未收到');
+    }
 }
 
 function handleTTSAudio(data) {

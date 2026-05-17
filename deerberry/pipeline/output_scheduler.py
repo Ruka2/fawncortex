@@ -13,14 +13,49 @@
 import asyncio
 from dataclasses import dataclass
 from enum import Enum
+import random
 from typing import Optional
 
 from deerberry.components.voice.tts import SiliconFlowCosyVoice
-from deerberry.tools.control_vts import express_emotion
+from deerberry.components.body.vts_controller import VTSController
+from deerberry.components.body.emotion_animate import (
+    animate_open_mouse,
+    animate_smile,
+    animate_angry,
+    animate_wink_left,
+    animate_wink_right,
+    animate_close_eyes,
+    animate_confused,
+    animate_lean_left,
+    animate_lean_right,
+    animate_look_up,
+    animate_look_down,
+    animate_surprised,
+    animate_smirk,
+)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..logger.latency_tracker import LatencyTracker
+
+
+# 表情名称 -> 动画函数映射（neural 为 None，由 idle 循环接管）
+_EMOTION_ANIMATION_MAP = {
+    "open_mouse": animate_open_mouse,
+    "smile": animate_smile,
+    "angry": animate_angry,
+    "wink_left": animate_wink_left,
+    "wink_right": animate_wink_right,
+    "close_eyes": animate_close_eyes,
+    "confused": animate_confused,
+    "lean_left": animate_lean_left,
+    "lean_right": animate_lean_right,
+    "look_up": animate_look_up,
+    "look_down": animate_look_down,
+    "surprised": animate_surprised,
+    "smirk": animate_smirk,
+    "neural": None,
+}
 
 
 class Priority(Enum):
@@ -34,6 +69,7 @@ class OutputTask:
     priority: Priority
     text: str
     emotion: str
+    tone: str
     source: str
     seq: int = 0
 
@@ -54,19 +90,22 @@ class OutputScheduler:
         await scheduler.interrupt()
     """
 
-    def __init__(self, tts: SiliconFlowCosyVoice, latency_tracker: Optional["LatencyTracker"] = None):
+    def __init__(self, tts: SiliconFlowCosyVoice, vts: Optional[VTSController] = None, latency_tracker: Optional["LatencyTracker"] = None):
         self.tts = tts
+        self.vts = vts
         self.latency_tracker = latency_tracker
         self._queue: asyncio.PriorityQueue[tuple[int, int, OutputTask]] = asyncio.PriorityQueue()
         self._seq_counter = 0
         self._speaking_lock = asyncio.Lock()
         self._current_tts_task: Optional[asyncio.Task] = None
+        self._current_emotion_task: Optional[asyncio.Task] = None
         self._running = True
 
     async def schedule(
         self,
         text: str,
         emotion: str,
+        tone: str,
         source: str,
         priority: Priority = Priority.NORMAL,
     ) -> None:
@@ -83,7 +122,7 @@ class OutputScheduler:
         if not text or not text.strip():
             return
         self._seq_counter += 1
-        task = OutputTask(priority, text, emotion, source, self._seq_counter)
+        task = OutputTask(priority, text, emotion, tone, source, self._seq_counter)
         # PriorityQueue 按元组第一个元素排序，负数实现高优先级在前
         await self._queue.put((-priority.value, self._seq_counter, task))
 
@@ -95,14 +134,16 @@ class OutputScheduler:
         # 1. 立即停止音频播放（同步阻塞的 sd.play 需要通过 sd.stop 中断）
         self.tts.stop()
 
-        # 2. 取消当前正在进行的 TTS 任务
-        if self._current_tts_task and not self._current_tts_task.done():
-            self._current_tts_task.cancel()
-            try:
-                await self._current_tts_task
-            except asyncio.CancelledError:
-                pass
-            self._current_tts_task = None
+        # 2. 取消当前正在进行的 TTS 和表情任务
+        for attr in ("_current_tts_task", "_current_emotion_task"):   # FIXME: 需不需要加"_current_emotion_task"任务需要debug检查
+            task = getattr(self, attr)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, attr, None)
 
         # 3. 清空待播报队列
         while not self._queue.empty():
@@ -126,37 +167,76 @@ class OutputScheduler:
                 if self.latency_tracker:
                     self.latency_tracker.mark_first_sound()
 
-                # 触发表情
-                try:
-                    express_emotion(action=task.emotion, duration=10.0, intensity=1.0)  # FIXME: 此处需要debug排查问题和开发
-                except Exception as e:
-                    print(f"⚠️  表情触发失败: {e}")
-
-                # TTS 播报（包装为可取消的任务）
+                # 同时启动 TTS 播报和 VTS 表情动画
                 print(f"✅ {task.source}: {task.text}")
-                self._current_tts_task = asyncio.create_task(
-                    self._speak_async(task.text)
+                tts_task = asyncio.create_task(
+                    self._speak_async(task.text, task.tone, task.emotion)
                 )
+                emotion_task = asyncio.create_task(
+                    self._express_emotion_async(task.emotion)
+                )
+                self._current_tts_task = tts_task
+                self._current_emotion_task = emotion_task
+
                 try:
-                    await self._current_tts_task
+                    await asyncio.gather(tts_task, emotion_task)
                 except asyncio.CancelledError:
-                    print("🔇 TTS 被打断")
+                    print("🔇 TTS/表情 被打断")
+                    # 确保子任务都被清理
+                    for t in (tts_task, emotion_task):   # FIXME: 需不需要加 emotion_task 需要DEBUG
+                        if not t.done():
+                            t.cancel()
+                    await asyncio.gather(tts_task, emotion_task, return_exceptions=True)
                 finally:
                     self._current_tts_task = None
+                    self._current_emotion_task = None
 
-    async def _speak_async(self, text: str) -> None:
-        """在线程池中执行 TTS，避免阻塞事件循环。"""
-        loop = asyncio.get_event_loop()
+    async def _express_emotion_async(self, emotion: str) -> None:
+        """异步执行 VTS 表情动画。
+
+        Args:
+            emotion: 表情动作名称（需与 _EMOTION_ANIMATION_MAP 的 key 对应）。
+            duration: 动画持续时间（秒），随机 3.0~10.0 秒。
+        """
+        duration = random.uniform(3.0, 10.0)
+        if self.vts is None:
+            return
+
+        # 设置当前表情的基础嘴型目标值（供 lip sync 叠加）
+        if hasattr(self.vts, "_mouth_target"):
+            from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+            self.vts._mouth_target = EMOTION_MOUTH_BASE.get(emotion, 0.05)
+
+        anim_func = _EMOTION_ANIMATION_MAP.get(emotion)
+        if anim_func is None:
+            return
         try:
-            await loop.run_in_executor(
-                None,
-                lambda: self.tts.stream_synthesize(
-                    text=text.strip(),
-                    speed=1.0,
-                    gain=0.0,
-                    response_format="mp3",
-                    play=True,
-                ),
+            await anim_func(self.vts, duration=duration)
+        except asyncio.CancelledError:
+            # 被打断时正常退出，由动画函数的 finally 恢复 idle
+            raise
+        except Exception as e:
+            print(f"⚠️  表情动画执行失败 ({emotion}): {e}")
+        finally:
+            # 动画结束后重置嘴型目标值为自然状态
+            if hasattr(self.vts, "_mouth_target"):
+                self.vts._mouth_target = 0.05
+
+    async def _speak_async(self, text: str, tone: str = "", emotion: str = "neural") -> None:
+        """PCM 流式播放 TTS，同时实时 lip sync 驱动嘴型。"""
+        from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+        base_mouth_open = EMOTION_MOUTH_BASE.get(emotion, 0.05)
+        try:
+            await self.tts.stream_synthesize(
+                text=text,
+                tone=tone,
+                speed=1.0,
+                gain=0.0,
+                response_format="pcm",
+                sample_rate=44100,
+                play=True,
+                vts_controller=self.vts,
+                base_mouth_open=base_mouth_open,
             )
         except asyncio.CancelledError:
             raise

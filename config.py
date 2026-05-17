@@ -3,6 +3,13 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+### 项目启动设置
+# 用于项目管道数值控制的参数
+# 大脑智能体最大思考时间
+BRAIN_TIMEOUT = 300
+# 每次容忍大脑智能体中间思考的时间间隔，超过这个时间之后自动截断正在生成的思维过程，并发送到对话中进行提前回复
+BRAIN_CUT_TIME_DURATION = 5
+
 ### LLM模型配置
 # 默认全局LLM配置（用于本项目非智能体相关的数据清洗、快速调试
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")      # e.g. OPENAI_API_KEY "sk-xxx"
@@ -27,10 +34,10 @@ def _role_cfg(role: str):
 # 拷贝配置，防止每次调整浪费时间
 LLM_ROLE_CONFIG = {
     "chat": _role_cfg("chat"),
-    "emotion": _role_cfg("chat"),
+    "emotion": _role_cfg("chat"),      # 沿用chat_agent
     "brain": _role_cfg("brain"),
-    "reflection": _role_cfg("brain"),
-    "memory": _role_cfg("brain"),
+    "reflection": _role_cfg("brain"),  # 沿用brain_agent
+    "memory": _role_cfg("brain"),      # 沿用brain_agent
 }
 
 # 角色专属 generate_kwargs（按模型特性定制，例如是否开启 thinking）
@@ -45,7 +52,7 @@ LLM_ROLE_GENERATE_KWARGS = {
 }
 
 ### LLM推理细节设置
-# 智能体所使用到的LLM是否流式输出
+# 智能体所使用到的LLM是否流式输出（若设置为False，则大脑智能体将不再流式生成，会导致pipeline变为一问一答的情况，响应延迟会变得特别大）
 STREAM = True  # e.g. enum[True, False]
 
 
@@ -77,7 +84,6 @@ LOG_DIR = os.getenv("LOG_DIR", "./logs")
 # Vtube Studio 端口配置
 VTS_HOST = os.getenv("VTS_HOST", "localhost")
 VTS_PORT = int(os.getenv("VTS_PORT", "25565"))
-
 
 
 ### Semantic Scholar 论文搜索配置

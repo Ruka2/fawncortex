@@ -41,6 +41,7 @@ async def midway_watcher(
     scheduler: OutputScheduler,
     reflection_agent: ReflectionAgent,
     emotion: str,
+    tone: str,
     threshold: float,
     stop_event: asyncio.Event,
     user_name: str = "用户",
@@ -160,7 +161,8 @@ async def midway_watcher(
             trigger_msg = Msg(
                 name=user_name,
                 # content="[系统提示]\t结合你的思考回答用户",
-                content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
+                # content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
+                content="[系统提示]\t参考最近系统思考，接着回复用户",
                 role="user",
             )
 
@@ -203,7 +205,7 @@ async def midway_watcher(
             # 3. TTS 播报中间汇报（使用原始文本）
             # 【关键】midway 语音可以被用户下一轮输入打断，因为 scheduler.interrupt()
             if action_label in ("summarize", "clarify"):
-                await scheduler.schedule(midway_text, emotion, "midway")
+                await scheduler.schedule(midway_text, emotion, tone, "midway")
 
                 # FIXME: 目前大脑智能体的思考模式还算正常，是否需要将已对话内容回灌到大脑智能体的上下文需要考虑
                 # 因为目前实际上是chat_agent不停的去复制粘贴brain_agent的信息到自己memory中，也就是chat_agent的输出是完成跟着大脑智能体的，所以目前还不太需要考虑需要回灌信息
@@ -240,6 +242,7 @@ async def brain_summary(
     scheduler: OutputScheduler,
     reflection_agent: ReflectionAgent,
     current_emotion: str,
+    current_tone: str,
     user_input: str,
     summary_thought: str,
     brain_bg: BackgroundBrainAgent,
@@ -319,7 +322,8 @@ async def brain_summary(
     trigger_msg_2 = Msg(
         name=user_name,
         # content="[系统提示]\t请基于思考过程历史，组织成通顺句子回复用户",
-        content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
+        # content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
+        content="[系统提示]\t参考最近系统思考，接着回复用户",
         role="user",
     )
 
@@ -364,6 +368,7 @@ async def brain_summary(
         await scheduler.schedule(
             summary_text,
             current_emotion,
+            current_tone,
             source_label,
         )
         

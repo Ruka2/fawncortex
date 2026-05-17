@@ -66,6 +66,7 @@ from deerberry.tools.get_current_time import get_current_time
 
 # 外部非智能体执行工具
 from deerberry.components.voice.tts import SiliconFlowCosyVoice
+from deerberry.components.body.vts_controller import VTSController
 from deerberry.pipeline.output_scheduler import OutputScheduler
 
 # 日志打印代码
@@ -123,14 +124,23 @@ async def main() -> None:
     enable_file_logging()
     latency_tracker = LatencyTracker()
 
-    # ── 1. 初始化 TTS + OutputScheduler（语音/表情输出轨道）──
+    # ── 1. 初始化 TTS + VTS + OutputScheduler（语音/表情输出轨道）──
     tts = SiliconFlowCosyVoice(
         api_key=config.TTS_API_KEY,
         api_url=config.TTS_BASE_URL,
         model=config.TTS_MODEL_NAME,
         voice=config.TTS_VOICE,
     )
-    scheduler = OutputScheduler(tts, latency_tracker=latency_tracker)
+
+    vts = VTSController()
+    try:
+        await vts.connect_and_auth()
+        print("[init] VTS 已连接并认证成功")
+    except Exception as e:
+        print(f"[init] VTS 连接失败，将以无 VTS 模式运行: {e}")
+        vts = None
+
+    scheduler = OutputScheduler(tts=tts, vts=vts, latency_tracker=latency_tracker)
     asyncio.create_task(scheduler.run())
     print(f"[init] TTS 已创建: {config.TTS_MODEL_NAME}, {config.TTS_VOICE}")
     print("[init] OutputScheduler 已启动")
@@ -218,7 +228,7 @@ async def main() -> None:
     current_midway_task: Optional[asyncio.Task] = None
     current_stop_event: Optional[asyncio.Event] = None
     # 当前轮次的前台表情（用于 midway TTS）
-    current_emotion = "smile"
+    current_emotion = "neural"
 
     try:
         while True:
@@ -268,13 +278,8 @@ async def main() -> None:
                 # 【前台智能体】由 FrontStagePipeline 统一封装并行执行 + 结果组合 + 输出调度
                 chat_result, emotion_result, chat_elapsed, emotion_elapsed = await front_stage.respond(msg)
 
-                # 记录当前轮次的表情，供 midway 汇报复用
-                if emotion_result:
-                    current_emotion = EmotionAgent.parse_action(
-                        emotion_result.get_text_content() or ""
-                    )
-                else:
-                    current_emotion = "smile"
+                # 记录当前轮次的表情，如果有以下pipeline想要服用的话
+                current_emotion, current_tone = EmotionAgent.parse_action(emotion_result.get_text_content())
                 
                 
                 # ── 6.4.5 启动 midway_watcher（中间过程监听器）──
@@ -282,6 +287,9 @@ async def main() -> None:
                 threshold = reflection_agent.compute_dynamic_threshold(chat_result)
                 print(f"[Midway] 🕐 动态阈值: {threshold:.1f}s（前台回复 {len(chat_result.get_text_content() or '')} 字符）")
                 current_stop_event = asyncio.Event()
+                
+                # FIXME: 因为中间汇报和总结目前不考虑再一次推理表情，所以先使用默认占位符表情防止做出多余的动作
+                current_emotion = "neural"
                 current_midway_task = asyncio.create_task(
                     midway_watcher(
                         brain_bg=brain_bg,
@@ -289,6 +297,7 @@ async def main() -> None:
                         scheduler=scheduler,
                         reflection_agent=reflection_agent,
                         emotion=current_emotion,
+                        tone=current_tone,
                         threshold=threshold,
                         stop_event=current_stop_event,
                         user_name=USER_NAME,
@@ -297,11 +306,11 @@ async def main() -> None:
                 )
 
                 # ── 6.5 等待 BrainAgent 思考结果（带超时，非阻塞前台）──
-                BRAIN_TIMEOUT = 360.0  # 秒，深度思考，前台没有响应后最大容许大脑智能体的时间，建议后续根据问题复杂度动态调整
+                # BRAIN_TIMEOUT = 360.0  # 秒，深度思考，前台没有响应后最大容许大脑智能体的时间，建议后续根据问题复杂度动态调整
                 try:
                     brain_output = await asyncio.wait_for(
                         brain_bg.output_queue.get(),
-                        timeout=BRAIN_TIMEOUT,
+                        timeout=config.BRAIN_TIMEOUT,
                     )
                     
                     # brain 完成后，通知 midway_watcher 停止
@@ -324,11 +333,14 @@ async def main() -> None:
                         thought = brain_output["thought"]
                         summary_thought = thought.raw_data.get("insight", "")
 
+                        # FIXME: 因为中间汇报和总结目前不考虑再一次推理表情，所以先使用默认占位符表情防止做出多余的动作
+                        current_emotion = "neural"
                         await brain_summary(
                             chat_agent=chat_agent,
                             scheduler=scheduler,
                             reflection_agent=reflection_agent,
                             current_emotion=current_emotion,
+                            current_tone=current_tone,
                             user_input=user_input,
                             summary_thought=summary_thought,
                             brain_bg=brain_bg,
@@ -338,7 +350,7 @@ async def main() -> None:
                                                     
 
                 except asyncio.TimeoutError:
-                    print(f"[Reflection] ⏱ BrainAgent 思考超时（>{BRAIN_TIMEOUT}s），触发最后一次总结")
+                    print(f"[Reflection] ⏱ BrainAgent 思考超时（>{config.BRAIN_TIMEOUT}s），触发最后一次总结")
 
                     # ── 1. 先停止 midway_watcher，确保所有 midway 都已入队后再触发 summary ──
                     if current_stop_event:
@@ -417,6 +429,13 @@ async def main() -> None:
             await scheduler.stop()
         except Exception as e:
             print(f"[Shutdown] 关闭 scheduler 失败: {e}")
+
+        try:
+            if vts:
+                print("[Shutdown] 正在关闭 VTS...")
+                await vts.close()
+        except Exception as e:
+            print(f"[Shutdown] 关闭 VTS 失败: {e}")
 
         try:
             print("[Shutdown] 正在关闭 BackgroundBrainAgent...")

@@ -97,11 +97,11 @@ class FrontStagePipeline:
         # 2. 两者都完成后，统一调度输出（确保 text 和 emotion 匹配）
         if chat_result is not None and emotion_result is not None:
             text = chat_result.get_text_content() or ""
-            action = EmotionAgent.parse_action(emotion_result.get_text_content() or "")
-            await self.scheduler.schedule(text, action, "chat")
+            emotion, tone = EmotionAgent.parse_action(emotion_result.get_text_content() or "")
+            await self.scheduler.schedule(text, emotion, tone, "chat")
         elif chat_result is not None:
             # Emotion 异常失败，只用默认表情兜底
             text = chat_result.get_text_content() or ""
-            await self.scheduler.schedule(text, "smile", "chat")
+            await self.scheduler.schedule(text, "neural", "", "chat")
 
         return chat_result, emotion_result, chat_elapsed, emotion_elapsed
