@@ -19,10 +19,10 @@ import time
 
 from agentscope.message import Msg
 
-from deerberry.agent.chat_agent import ChatAgent
-from deerberry.agent.reflection_agent import ReflectionAgent
-from deerberry.pipeline.event_controller import BackgroundBrainAgent
-from deerberry.pipeline.output_scheduler import OutputScheduler
+from fawncortex.agent.chat_agent import ChatAgent
+from fawncortex.agent.reflection_agent import ReflectionAgent
+from fawncortex.pipeline.event_controller import BackgroundBrainAgent
+from fawncortex.pipeline.output_scheduler import OutputScheduler
 
 
 # =============================================================================

@@ -1,5 +1,5 @@
 /**
- * Deerberry Web UI 前端逻辑
+ * FawnCortex Web UI 前端逻辑
  * ==========================
  * 职责：
  * 1. WebSocket 连接管理（自动重连）
@@ -33,6 +33,7 @@ const AppState = {
     brainStatus: 'idle',          // BrainAgent 当前状态（idle/thinking/acting）
     ttsBubbleQueue: [],           // 已调度给 TTS 的消息队列，按播放顺序排列
     roundTtsAudioDuration: 0,     // 本轮已播放的 TTS 音频总时长（秒）
+    subtitleHideTimer: null,      // 字幕隐藏定时器
 };
 
 // DOM 元素缓存
@@ -174,6 +175,9 @@ function handleServerMessage(data) {
         case 'tts_started':
             handleTTSStarted(payload);
             break;
+        case 'tts_finished':
+            handleTTSFinished(payload);
+            break;
         case 'tts_audio':
             handleTTSAudio(payload);
             break;
@@ -207,7 +211,7 @@ function handleServerMessage(data) {
 
 function handleRoundStart(data) {
     AppState.currentRound = data.round_id;
-    DOM.roundIndicator.textContent = `Round ${data.round_id}`;
+    if (DOM.roundIndicator) DOM.roundIndicator.textContent = `Round ${data.round_id}`;
     // addSystemMessage(`🚀 第 ${data.round_id} 轮开始`);
 
     // 新一轮开始时，清空 BrainAgent 的上一轮显示
@@ -430,12 +434,45 @@ function handleTTSText(data) {
 
 function handleTTSStarted(data) {
     // 后端 TTS 开始播放时，从队列取出对应消息并渲染气泡（与 TTS 同步）
+    // 清除旧的隐藏定时器，避免上一句的定时器在当前句播放期间把字幕隐藏
+    if (AppState.subtitleHideTimer) {
+        clearTimeout(AppState.subtitleHideTimer);
+        AppState.subtitleHideTimer = null;
+    }
     const bubbleData = AppState.ttsBubbleQueue.shift();
     if (bubbleData) {
         addChatBubble('assistant', bubbleData.text, bubbleData.round_id, bubbleData.source);
+        showLiveSubtitle(bubbleData.text);
     } else {
         console.warn('[TTS] tts_started 触发但 ttsBubbleQueue 为空，可能 output_scheduled 未收到');
     }
+}
+
+function handleTTSFinished(data) {
+    // TTS 播放结束，根据实际语音时长设置字幕停留时间
+    const duration = data.duration || 0;
+    // 停留时间 = 语音时长 + 0.5s 缓冲，最少 1.5s
+    const hideDelay = Math.max(duration * 1000 + 500, 1500);
+
+    if (AppState.subtitleHideTimer) {
+        clearTimeout(AppState.subtitleHideTimer);
+    }
+    AppState.subtitleHideTimer = setTimeout(() => {
+        hideLiveSubtitle();
+        AppState.subtitleHideTimer = null;
+    }, hideDelay);
+}
+
+function showLiveSubtitle(text) {
+    const subtitleEl = document.getElementById('live-subtitle');
+    const textEl = document.getElementById('live-subtitle-text');
+    if (textEl) textEl.textContent = text;
+    if (subtitleEl) subtitleEl.classList.add('active');
+}
+
+function hideLiveSubtitle() {
+    const subtitleEl = document.getElementById('live-subtitle');
+    if (subtitleEl) subtitleEl.classList.remove('active');
 }
 
 function handleTTSAudio(data) {
@@ -454,6 +491,11 @@ function handleInterrupt() {
     stopCurrentAudio();
     AppState.audioQueue = [];
     AppState.ttsBubbleQueue = [];
+    if (AppState.subtitleHideTimer) {
+        clearTimeout(AppState.subtitleHideTimer);
+        AppState.subtitleHideTimer = null;
+    }
+    hideLiveSubtitle();
 }
 
 function handleReset() {
@@ -477,6 +519,11 @@ function handleReset() {
     AppState.chatReflectionAction = '-';
     AppState.ttsBubbleQueue = [];
     AppState.roundTtsAudioDuration = 0;
+    if (AppState.subtitleHideTimer) {
+        clearTimeout(AppState.subtitleHideTimer);
+        AppState.subtitleHideTimer = null;
+    }
+    hideLiveSubtitle();
     AppState.currentRound = 0;
 
     // 3. 重置 BrainAgent 面板
@@ -529,6 +576,8 @@ function handleChatContext(data) {
 // ============================================================
 
 function addChatBubble(role, text, roundId, sourceTag = null) {
+    if (!DOM.chatMessages) return;
+
     const msgDiv = document.createElement('div');
     msgDiv.className = `message ${role}`;
 
@@ -567,6 +616,8 @@ function addChatBubble(role, text, roundId, sourceTag = null) {
 }
 
 function addSystemMessage(text) {
+    if (!DOM.chatMessages) return;
+
     const msgDiv = document.createElement('div');
     msgDiv.className = 'message system';
 
@@ -581,6 +632,8 @@ function addSystemMessage(text) {
 
 function addRoundStatsCard(data) {
     // """渲染本轮统计卡片（可点击展开/折叠），显示性能评估指标。"""
+    if (!DOM.chatMessages) return;
+
     const msgDiv = document.createElement('div');
     msgDiv.className = 'message system';
 
@@ -614,14 +667,14 @@ function addRoundStatsCard(data) {
             desc: '用户输入 → 首次听到语音',
             value: `${data.user_perceived_s.toFixed(2)}s`,
         },
-        {
-            label: '语音总时长',
-            desc: '本轮 TTS 音频累计播放时长',
-            value: `${AppState.roundTtsAudioDuration.toFixed(2)}s`,
-        },
+        // {
+        //     label: '语音总时长',
+        //     desc: '本轮 TTS 音频累计播放时长',
+        //     value: `${AppState.roundTtsAudioDuration.toFixed(2)}s`,
+        // },
         {
             label: '处理总时长',
-            desc: '整轮处理消耗（不含 TTS）',
+            desc: '本轮异步编排全部推理时间消耗',
             value: `${data.round_without_tts_s.toFixed(2)}s`,
         },
     ];
@@ -662,8 +715,15 @@ function addRoundStatsCard(data) {
     scrollToBottom();
 }
 
+function updateVideoStatus(connected, text) {
+    const dot = document.getElementById('video-status-dot');
+    const label = document.getElementById('video-status-text');
+    if (dot) dot.classList.toggle('connected', connected);
+    if (label) label.textContent = text || (connected ? '推流中' : '等待推流...');
+}
+
 function scrollToBottom() {
-    DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+    if (DOM.chatMessages) DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
 }
 
 function updateBrainStatus(status) {
@@ -671,7 +731,12 @@ function updateBrainStatus(status) {
     if (!DOM.brainStatus) return;
     // 直接显示英文状态，不做中文映射
     DOM.brainStatus.textContent = status;
-    DOM.brainStatus.className = `status-badge ${status}`;
+    // 保留原有类名（如 panel-status / monitor-status-badge），只追加状态类
+    const baseClass = DOM.brainStatus.dataset.baseClass || DOM.brainStatus.className.split(' ')[0];
+    if (!DOM.brainStatus.dataset.baseClass) {
+        DOM.brainStatus.dataset.baseClass = baseClass;
+    }
+    DOM.brainStatus.className = `${baseClass} ${status}`;
 }
 
 function updateEmotionStats(data) {
@@ -924,6 +989,7 @@ function stopCurrentAudio() {
 // ============================================================
 
 function sendMessage() {
+    if (!DOM.userInput) return;
     const text = DOM.userInput.value.trim();
     if (!text || !AppState.connected) return;
 
@@ -1005,10 +1071,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Panel 折叠/展开
-    document.querySelectorAll('.panel-header').forEach(header => {
+    // Panel 折叠/展开（兼容 .panel-header 和 .monitor-panel-header）
+    document.querySelectorAll('.panel-header, .monitor-panel-header').forEach(header => {
         header.addEventListener('click', () => {
-            const panel = header.closest('.panel');
+            const panel = header.closest('.panel, .monitor-panel');
             if (panel) {
                 panel.classList.toggle('collapsed');
                 const toggle = header.querySelector('.panel-toggle');
@@ -1018,4 +1084,106 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     });
+
+    // ========== Live 页面：OBS 视频播放器初始化 ==========
+    initVideoPlayer();
 });
+
+// ============================================================
+// VTube Studio 画面捕获（方案 B：getDisplayMedia）
+// ============================================================
+// 直接捕获本地 VTube Studio 窗口，零服务器、零协议延迟。
+// 浏览器弹出窗口选择器后，选择 VTube Studio 即可。
+// 注意：VTube Studio 窗口不能最小化，否则可能黑屏。
+// ============================================================
+
+let captureStream = null;
+
+function initVideoPlayer() {
+    const videoEl = document.getElementById('video-player');
+    if (!videoEl) return;
+
+    async function startCapture() {
+        // 检测浏览器是否支持 getDisplayMedia
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+            updateVideoStatus(false, '浏览器禁用了屏幕捕获');
+            alert('屏幕捕获功能被浏览器禁用。\n\n可能原因：\n1. 你当前使用的是 http://0.0.0.0:8259 访问\n2. 浏览器安全策略要求使用 localhost 或 https\n\n请改用以下地址访问：\nhttp://localhost:8259/live');
+            return;
+        }
+
+        // 停止旧流
+        if (captureStream) {
+            captureStream.getTracks().forEach(track => track.stop());
+            captureStream = null;
+        }
+
+        try {
+            captureStream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    cursor: 'never',
+                    displaySurface: 'window',
+                },
+                audio: false,
+            });
+
+            videoEl.srcObject = captureStream;
+            videoEl.muted = true;
+            await videoEl.play();
+
+            updateVideoStatus(true, '已捕获 VTS 窗口');
+
+            // 监听共享停止
+            captureStream.getVideoTracks().forEach(track => {
+                track.onended = () => {
+                    updateVideoStatus(false, '共享已停止');
+                    videoEl.srcObject = null;
+                    captureStream = null;
+                    if (playBtn) {
+                        playBtn.disabled = true;
+                        playBtn.textContent = '⏸ 暂停';
+                    }
+                };
+            });
+
+            if (playBtn) {
+                playBtn.disabled = false;
+                playBtn.textContent = '⏸ 暂停';
+            }
+
+        } catch (err) {
+            console.warn('[Capture] 失败:', err);
+            if (err.name === 'NotAllowedError') {
+                updateVideoStatus(false, '用户取消了窗口选择');
+            } else if (err.name === 'NotFoundError') {
+                updateVideoStatus(false, '未找到可捕获的窗口');
+            } else {
+                updateVideoStatus(false, '捕获失败: ' + err.message);
+            }
+        }
+    }
+
+    // 播放/暂停按钮
+    const playBtn = document.getElementById('video-play-btn');
+    if (playBtn) {
+        playBtn.addEventListener('click', () => {
+            if (videoEl.paused) {
+                videoEl.play();
+                playBtn.textContent = '⏸ 暂停';
+            } else {
+                videoEl.pause();
+                playBtn.textContent = '▶ 播放';
+            }
+        });
+    }
+
+    // 「选择 VTS 窗口」按钮
+    const captureBtn = document.getElementById('video-capture-btn');
+    if (captureBtn) {
+        captureBtn.addEventListener('click', () => {
+            updateVideoStatus(false, '等待选择 VTube Studio 窗口...');
+            startCapture();
+        });
+    }
+
+    updateVideoStatus(false, '请点击「选择 VTS 窗口」捕获 VTube Studio');
+}

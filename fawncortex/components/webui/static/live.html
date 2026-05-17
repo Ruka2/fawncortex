@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FawnCortex 智能体对话系统 - Live</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <!-- 方案B: getDisplayMedia 直接捕获本地窗口（VTube Studio） -->
+    <style>
+        /* Live 页面特有样式 */
+        .live-body {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        .live-left {
+            display: flex;
+            flex-direction: column;
+            width: 62%;
+            min-width: 400px;
+            background: var(--chat-bg);
+            border-right: 1px solid var(--border-color);
+        }
+        .live-right {
+            display: flex;
+            flex-direction: column;
+            width: 38%;
+            min-width: 300px;
+            background: #fff;
+            position: relative;
+            padding-top: 45px; /* 与左侧 chat-header 高度对齐 */
+        }
+        .video-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+        #video-player {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            clip-path: inset(40px 0 0 0); /* 裁掉 macOS 顶部标题栏 */
+            background: #fff;
+        }
+        .video-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 12px 16px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.7));
+            color: #fff;
+            font-size: 12px;
+            pointer-events: none;
+        }
+        .video-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .video-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #f44336;
+        }
+        .video-status-dot.connected {
+            background: #4caf50;
+            animation: pulse 2s infinite;
+        }
+        .video-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #1a1a1a;
+            border-top: 1px solid #333;
+        }
+        .video-btn {
+            padding: 4px 12px;
+            background: #333;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .video-btn:hover {
+            background: #444;
+        }
+        .video-btn:disabled {
+            background: #222;
+            color: #666;
+            cursor: not-allowed;
+        }
+        .video-url {
+            flex: 1;
+            font-size: 11px;
+            color: #888;
+            font-family: monospace;
+            text-align: center;
+        }
+        /* 字幕层（叠加在视频上方） */
+        .live-subtitle {
+            position: absolute;
+            bottom: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            max-width: 80%;
+            text-align: center;
+            pointer-events: none;
+            z-index: 10;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .live-subtitle.active {
+            opacity: 1;
+        }
+        .live-subtitle-text {
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 16px;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- 顶部标题栏 -->
+        <header class="app-header">
+            <div class="header-title">FawnCortex 智能体对话系统 — Live</div>
+            <div class="header-status">
+                <span id="connection-status" class="status-dot disconnected">未连接</span>
+            </div>
+        </header>
+
+        <!-- 主体区域 -->
+        <div class="live-body">
+            <!-- 左侧：主聊天窗口 -->
+            <div class="live-left">
+                <div class="chat-header">
+                    <span class="chat-title">主聊天窗</span>
+                    <div class="chat-header-actions">
+                        <button id="clear-chat-btn" class="clear-btn" title="清空所有智能体短期记忆">清空聊天记录</button>
+                        <span id="round-indicator" class="round-badge">Round 0</span>
+                    </div>
+                </div>
+                <div id="chat-messages" class="chat-messages"></div>
+                <div class="chat-input-area">
+                    <textarea id="user-input" placeholder="输入消息，按 Enter 发送..." rows="2"></textarea>
+                    <button id="send-btn" class="send-btn">发送</button>
+                </div>
+
+                <!-- 名称配置区域 -->
+                <div class="name-config-area">
+                    <div class="name-config-row">
+                        <label for="agent-name-input">Agent 名称</label>
+                        <input type="text" id="agent-name-input" value="Ruka" placeholder="Agent 名称">
+                    </div>
+                    <div class="name-config-row">
+                        <label for="user-name-input">用户名称</label>
+                        <input type="text" id="user-name-input" value="鹿过" placeholder="用户名称">
+                    </div>
+                    <button id="save-names-btn" class="save-names-btn">💾 保存名称</button>
+                </div>
+            </div>
+
+            <!-- 右侧：OBS 推流画面 -->
+            <div class="live-right">
+                <div class="video-container">
+                    <video id="video-player" autoplay muted playsinline></video>
+                    <!-- 字幕叠加层 -->
+                    <div id="live-subtitle" class="live-subtitle">
+                        <div id="live-subtitle-text" class="live-subtitle-text"></div>
+                    </div>
+                    <div class="video-overlay">
+                        <div class="video-status">
+                            <span id="video-status-dot" class="video-status-dot"></span>
+                            <span id="video-status-text">等待推流...</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="video-controls">
+                    <button id="video-play-btn" class="video-btn" disabled>⏸ 暂停</button>
+                    <button id="video-capture-btn" class="video-btn" style="background:#4caf50;">🖥️ 选择 VTS 窗口</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 音频播放器（隐藏，用于 TTS 播放控制） -->
+    <audio id="tts-player" style="display:none;"></audio>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

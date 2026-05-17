@@ -25,8 +25,8 @@ from agentscope.model import OpenAIChatModel
 from agentscope.memory import InMemoryMemory
 from agentscope.formatter import OpenAIChatFormatter
 
-from deerberry.base.simple_agent import SimpleAgent
-from deerberry.pipeline.event_controller import ThoughtEvent, InterventionEvent
+from fawncortex.base.simple_agent import SimpleAgent
+from fawncortex.pipeline.event_controller import ThoughtEvent, InterventionEvent
 
 import sys
 from pathlib import Path

@@ -11,9 +11,9 @@ from agentscope.agent import ReActAgent
 from agentscope.tool import Toolkit
 from agentscope.message import Msg
 
-from deerberry.base.simple_agent import estimate_tokens
+from fawncortex.base.simple_agent import estimate_tokens
 
-from deerberry.tools.search_memory import (
+from fawncortex.tools.search_memory import (
     set_memory_manager,
     retrieve_from_memory,
     record_to_memory,

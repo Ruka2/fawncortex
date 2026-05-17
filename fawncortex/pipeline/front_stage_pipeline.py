@@ -20,8 +20,8 @@ from typing import Any, Optional
 
 from agentscope.message import Msg
 
-from deerberry.agent.emotion_agent import EmotionAgent
-from deerberry.pipeline.output_scheduler import OutputScheduler
+from fawncortex.agent.emotion_agent import EmotionAgent
+from fawncortex.pipeline.output_scheduler import OutputScheduler
 
 
 class FrontStagePipeline:

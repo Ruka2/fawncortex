@@ -1,5 +1,5 @@
 """
-Deerberry Web 服务端核心引擎（main8_server.py）
+FawnCortex Web 服务端核心引擎（main8_server.py）
 ===============================================
 基于 main7_reflection.py 改造，适配 Web UI 的事件驱动版本。
 
@@ -32,7 +32,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config
 import asyncio
 import time
-import base64
 from typing import Any, Optional, Callable
 from collections import defaultdict
 
@@ -40,27 +39,27 @@ from agentscope.model import OpenAIChatModel
 from agentscope.message import Msg
 from agentscope.tool import Toolkit
 
-from deerberry.agent.chat_agent import ChatAgent
-from deerberry.agent.emotion_agent import EmotionAgent
-from deerberry.agent.brain_agent import BrainAgent
-from deerberry.agent.reflection_agent import ReflectionAgent
+from fawncortex.agent.chat_agent import ChatAgent
+from fawncortex.agent.emotion_agent import EmotionAgent
+from fawncortex.agent.brain_agent import BrainAgent
+from fawncortex.agent.reflection_agent import ReflectionAgent
 
-from deerberry.base.memory import create_long_term_memory
-from deerberry.tools.search_memory import (
+from fawncortex.base.memory import create_long_term_memory
+from fawncortex.tools.search_memory import (
     set_memory_manager,
     retrieve_from_memory,
     record_to_memory,
 )
-from deerberry.tools.paper_search import (
+from fawncortex.tools.paper_search import (
     search_papers,
     get_paper_details,
     search_authors,
     read_paper,
 )
-from deerberry.tools.get_current_time import get_current_time
-from deerberry.components.voice.tts import SiliconFlowCosyVoice
-from deerberry.components.body.vts_controller import VTSController
-from deerberry.components.body.emotion_animate import (
+from fawncortex.tools.get_current_time import get_current_time
+from fawncortex.components.voice.tts import SiliconFlowCosyVoice
+from fawncortex.components.body.vts_controller import VTSController
+from fawncortex.components.body.emotion_animate import (
     animate_open_mouse,
     animate_smile,
     animate_angry,
@@ -75,30 +74,24 @@ from deerberry.components.body.emotion_animate import (
     animate_surprised,
     animate_smirk,
 )
-from deerberry.pipeline.output_scheduler import OutputScheduler, Priority, OutputTask
-from deerberry.pipeline.event_controller import (
+from fawncortex.pipeline.output_scheduler import Priority, OutputTask
+from fawncortex.pipeline.event_controller import (
     EventBus,
     BackgroundBrainAgent,
     UserInputEvent,
 )
-from deerberry.pipeline.front_stage_pipeline import FrontStagePipeline
-from deerberry.pipeline.back_stage_midway import midway_watcher, brain_summary
+from fawncortex.pipeline.front_stage_pipeline import FrontStagePipeline
+from fawncortex.pipeline.back_stage_midway import midway_watcher, brain_summary
 
-from deerberry.logger.latency_tracker import LatencyTracker
-from deerberry.logger.logger import enable_file_logging
+from fawncortex.logger.latency_tracker import LatencyTracker
+from fawncortex.logger.logger import enable_file_logging
 
 
-AGENT_NAME = "Ruka"
-USER_NAME = "鹿过"
-
-# AGENT_NAME = "翠花"
-# USER_NAME = "李华"
 
 
 # =============================================================================
 # 辅助函数
 # =============================================================================
-
 def build_model_for_role(role: str, stream: bool = True) -> OpenAIChatModel:
     """根据 config.LLM_ROLE_CONFIG 中的角色映射创建 OpenAIChatModel。"""
     cfg = config.LLM_ROLE_CONFIG.get(role, {})
@@ -123,7 +116,7 @@ def build_model_for_role(role: str, stream: bool = True) -> OpenAIChatModel:
 class EventEmitter:
     """轻量级异步事件系统。
 
-    将 DeerberryEngine 的内部状态通过事件暴露给外部（server.py）。
+    将 FawnCortexEngine 的内部状态通过事件暴露给外部（server.py）。
     支持同步和异步 handler。
     """
 
@@ -316,7 +309,7 @@ class WebOutputScheduler:
 
         # 设置当前表情的基础嘴型目标值（供 lip sync 叠加）
         if hasattr(self.vts, "_mouth_target"):
-            from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+            from fawncortex.components.body.emotion_animate import EMOTION_MOUTH_BASE
             self.vts._mouth_target = EMOTION_MOUTH_BASE.get(emotion, 0.05)
 
         anim_func = _EMOTION_ANIMATION_MAP.get(emotion)
@@ -337,7 +330,7 @@ class WebOutputScheduler:
         """后端 PCM 流式播放 TTS，同时实时 lip sync 驱动嘴型。
         通过事件通知前端播放开始/结束，用于 UI 动画同步。
         """
-        from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+        from fawncortex.components.body.emotion_animate import EMOTION_MOUTH_BASE
         base_mouth_open = EMOTION_MOUTH_BASE.get(emotion, 0.05)
 
         await self.emitter.emit("tts_started", {
@@ -370,6 +363,7 @@ class WebOutputScheduler:
                 "text": text,
                 "emotion": emotion,
                 "tone": tone,
+                "duration": round(tts_elapsed, 2) if 'tts_elapsed' in locals() else 0.0,
             })
 
     async def stop(self) -> None:
@@ -423,8 +417,8 @@ async def brain_monitor(
 # 核心引擎
 # =============================================================================
 
-class DeerberryEngine:
-    """Deerberry Web UI 核心引擎。
+class FawnCortexEngine:
+    """FawnCortex Web UI 核心引擎。
 
     封装完整的 Agent 集群、事件总线、前后台管道。
     通过 EventEmitter 将内部状态暴露给外部，实现前后端解耦。
@@ -453,8 +447,8 @@ class DeerberryEngine:
         self.current_emotion = "smile"
 
         # 名称配置（可由前端动态修改）
-        self.agent_name = AGENT_NAME
-        self.user_name = USER_NAME
+        self.agent_name = config.AGENT_NAME
+        self.user_name = config.USER_NAME
         self.chat_model = None
 
         # ChatAgent 面板持久化状态（避免 midway/brain_summary 覆盖 front_stage 信息）
@@ -513,7 +507,7 @@ class DeerberryEngine:
         1. 用户手动点击"清空聊天记录"
         2. 自动评测时每个 jsonl 样本作为新场景前重置
         """
-        print("[DeerberryEngine] 🔄 正在重置所有智能体短期记忆...")
+        print("[FawnCortexEngine] 🔄 正在重置所有智能体短期记忆...")
 
         # 1. 中断当前输出调度器（清空 TTS 队列）
         await self.scheduler.interrupt()
@@ -558,7 +552,7 @@ class DeerberryEngine:
             "message": "所有智能体短期记忆已清空",
         })
 
-        print("[DeerberryEngine] ✅ 重置完成")
+        print("[FawnCortexEngine] ✅ 重置完成")
 
     # ── 内部初始化 ──
 
@@ -1153,9 +1147,9 @@ class DeerberryEngine:
 # 便捷入口
 # =============================================================================
 
-async def create_engine() -> DeerberryEngine:
+async def create_engine() -> FawnCortexEngine:
     """创建并初始化引擎（但不启动主循环）。"""
-    engine = DeerberryEngine()
+    engine = FawnCortexEngine()
     return engine
 
 

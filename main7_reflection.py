@@ -1,27 +1,3 @@
-"""
-聊天室入口（Chatroom Entry）
-=============================
-Event-Driven Multi-Agent Chatroom 的完整入口文件。
-
-架构概览（参考 PROJECT_ANALYSIS_AND_ROADMAP.md 3.1.1）：
-┌─────────────────────────────────────────────────────────────┐
-│  用户输入 → EventBus → 前台并行轨道（System 1）               │
-│                       → 后台认知轨道（System 2）               │
-│                       → ReflectionAgent（审判官）             │
-│                       → OutputScheduler（TTS/VTS 输出）       │
-└─────────────────────────────────────────────────────────────┘
-
-轨道说明：
-- 前台轨道：ChatAgent + EmotionAgent 并行响应，谁先完成谁先打印/播报
-- 后台轨道：BrainAgent 常驻后台，通过 EventBus 接收事件并深度思考
-- 审判层：ReflectionAgent 在关键时机（前台完成、Brain 完成、超时）做干预决策
-
-【架构标注说明】
-- 【基础设施】：已完整实现，可直接运行
-- 【策略占位】：仅提供骨架，需你后续精细化调整
-- 【扩展点】：标注了你未来可能扩展的位置
-"""
-
 # 项目路径根目录定位
 import sys
 from pathlib import Path
@@ -42,52 +18,49 @@ from agentscope.message import Msg
 from agentscope.tool import Toolkit
 
 # 自定义智能体依赖
-from deerberry.agent.chat_agent import ChatAgent
-from deerberry.agent.emotion_agent import EmotionAgent
-from deerberry.agent.brain_agent import BrainAgent
-from deerberry.agent.reflection_agent import ReflectionAgent
+from fawncortex.agent.chat_agent import ChatAgent
+from fawncortex.agent.emotion_agent import EmotionAgent
+from fawncortex.agent.brain_agent import BrainAgent
+from fawncortex.agent.reflection_agent import ReflectionAgent
 
 # 自定义智能体记忆的实例类
-from deerberry.base.memory import create_long_term_memory
+from fawncortex.base.memory import create_long_term_memory
 
 # 外部引用工具
-from deerberry.tools.search_memory import (
+from fawncortex.tools.search_memory import (
     set_memory_manager,
     retrieve_from_memory,
     record_to_memory,
 )
-from deerberry.tools.paper_search import (
+from fawncortex.tools.paper_search import (
     search_papers,
     get_paper_details,
     search_authors,
     read_paper,
 )
-from deerberry.tools.get_current_time import get_current_time
+from fawncortex.tools.get_current_time import get_current_time
 
 # 外部非智能体执行工具
-from deerberry.components.voice.tts import SiliconFlowCosyVoice
-from deerberry.components.body.vts_controller import VTSController
-from deerberry.pipeline.output_scheduler import OutputScheduler
+from fawncortex.components.voice.tts import SiliconFlowCosyVoice
+from fawncortex.components.body.vts_controller import VTSController
+from fawncortex.pipeline.output_scheduler import OutputScheduler
 
 # 日志打印代码
-from deerberry.logger.latency_tracker import LatencyTracker
-from deerberry.logger.logger import enable_file_logging
+from fawncortex.logger.latency_tracker import LatencyTracker
+from fawncortex.logger.logger import enable_file_logging
 
 # 分布式控制器
-from deerberry.pipeline.event_controller import (
+from fawncortex.pipeline.event_controller import (
     EventBus,
     BackgroundBrainAgent,
     UserInputEvent
 )
 
 # 分布式管线控制
-from deerberry.pipeline.back_stage_midway import midway_watcher, brain_summary
-from deerberry.pipeline.front_stage_pipeline import FrontStagePipeline
+from fawncortex.pipeline.back_stage_midway import midway_watcher, brain_summary
+from fawncortex.pipeline.front_stage_pipeline import FrontStagePipeline
 
 
-# 基础用户配置
-AGENT_NAME = "Ruka"
-USER_NAME = "鹿过"
 
 
 # =============================================================================
@@ -148,8 +121,8 @@ async def main() -> None:
     # ── 2. 初始化长期记忆 ──
     memory_cfg = config.LLM_ROLE_CONFIG.get("memory", {})
     long_term_memory = create_long_term_memory(
-        agent_name=AGENT_NAME,
-        user_name=USER_NAME,
+        agent_name=config.AGENT_NAME,
+        user_name=config.USER_NAME,
         vector_store_path=config.MEM0_VECTOR_STORE_PATH,
         history_db_path=config.MEM0_HISTORY_DB_PATH,
         llm_model_name=memory_cfg.get("model_name") or config.LLM_MODEL_NAME,
@@ -183,7 +156,7 @@ async def main() -> None:
         print(f"       {role:25s} model={used_model}, base_url={used_base}")
 
     # ── 4. 初始化核心智能体 ──
-    chat_agent = ChatAgent(model=chat_model, agent_name=AGENT_NAME)
+    chat_agent = ChatAgent(model=chat_model, agent_name=config.AGENT_NAME)
     emotion_agent = EmotionAgent(model=emotion_model)
 
     toolkit = Toolkit()
@@ -300,7 +273,7 @@ async def main() -> None:
                         tone=current_tone,
                         threshold=threshold,
                         stop_event=current_stop_event,
-                        user_name=USER_NAME,
+                        user_name=config.USER_NAME,
                         user_input=user_input,
                     )
                 )
@@ -345,7 +318,7 @@ async def main() -> None:
                             summary_thought=summary_thought,
                             brain_bg=brain_bg,
                             source_label="brain_summary",
-                            user_name=USER_NAME,
+                            user_name=config.USER_NAME,
                         )
                                                     
 
@@ -390,7 +363,7 @@ async def main() -> None:
                             summary_thought=summary_thought,
                             brain_bg=brain_bg,
                             source_label="brain_summary",
-                            user_name=USER_NAME,
+                            user_name=config.USER_NAME,
                         )
                     else:
                         print("[BrainSummary] ⚠️ 超时后无可用思考内容，跳过总结")
@@ -463,7 +436,7 @@ if __name__ == "__main__":
         traceback.print_exc()
     finally:
         import os
-        from deerberry.logger.logger import TeeLogger
+        from fawncortex.logger.logger import TeeLogger
         if isinstance(sys.stdout, TeeLogger):
             sys.stdout.close()
         os._exit(0)

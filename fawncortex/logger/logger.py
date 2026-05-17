@@ -5,7 +5,7 @@
 无需修改代码中任何现有的 print 语句。
 
 使用方式：
-    from deerberry.pipeline.logger import enable_file_logging
+    from fawncortex.pipeline.logger import enable_file_logging
     enable_file_logging()   # 从此处开始，所有 print 都会同时写入文件
 """
 

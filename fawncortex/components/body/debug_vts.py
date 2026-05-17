@@ -13,7 +13,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from deerberry.components.body.vts_controller import VTSController
+from fawncortex.components.body.vts_controller import VTSController
 
 from emotion_animate import (
     animate_open_mouse, animate_smile,

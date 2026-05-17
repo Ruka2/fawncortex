@@ -16,9 +16,9 @@ from enum import Enum
 import random
 from typing import Optional
 
-from deerberry.components.voice.tts import SiliconFlowCosyVoice
-from deerberry.components.body.vts_controller import VTSController
-from deerberry.components.body.emotion_animate import (
+from fawncortex.components.voice.tts import SiliconFlowCosyVoice
+from fawncortex.components.body.vts_controller import VTSController
+from fawncortex.components.body.emotion_animate import (
     animate_open_mouse,
     animate_smile,
     animate_angry,
@@ -204,7 +204,7 @@ class OutputScheduler:
 
         # 设置当前表情的基础嘴型目标值（供 lip sync 叠加）
         if hasattr(self.vts, "_mouth_target"):
-            from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+            from fawncortex.components.body.emotion_animate import EMOTION_MOUTH_BASE
             self.vts._mouth_target = EMOTION_MOUTH_BASE.get(emotion, 0.05)
 
         anim_func = _EMOTION_ANIMATION_MAP.get(emotion)
@@ -224,7 +224,7 @@ class OutputScheduler:
 
     async def _speak_async(self, text: str, tone: str = "", emotion: str = "neural") -> None:
         """PCM 流式播放 TTS，同时实时 lip sync 驱动嘴型。"""
-        from deerberry.components.body.emotion_animate import EMOTION_MOUTH_BASE
+        from fawncortex.components.body.emotion_animate import EMOTION_MOUTH_BASE
         base_mouth_open = EMOTION_MOUTH_BASE.get(emotion, 0.05)
         try:
             await self.tts.stream_synthesize(

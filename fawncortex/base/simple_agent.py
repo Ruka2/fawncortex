@@ -11,7 +11,7 @@ from agentscope.model import OpenAIChatModel
 from agentscope.memory import MemoryBase
 from agentscope.formatter import OpenAIChatFormatter
 
-from deerberry.base.memory import ShortTermMemory
+from fawncortex.base.memory import ShortTermMemory
 
 try:
     import tiktoken

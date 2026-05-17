@@ -8,13 +8,13 @@ from agentscope.model import OpenAIChatModel
 from agentscope.memory import MemoryBase
 from agentscope.formatter import OpenAIChatFormatter
 
-from deerberry.base.simple_agent import SimpleAgent
-from deerberry.base.memory import ShortTermMemory
+from fawncortex.base.simple_agent import SimpleAgent
+from fawncortex.base.memory import ShortTermMemory
 
 
 import re
 import json
-from deerberry.components.body.emotion_animate import AVAILABLE_ACTIONS
+from fawncortex.components.body.emotion_animate import AVAILABLE_ACTIONS
 
 available_action_content = json.dumps(AVAILABLE_ACTIONS, indent=2, ensure_ascii=False)
 

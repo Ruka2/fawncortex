@@ -4,11 +4,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ### 项目启动设置
+
 # 用于项目管道数值控制的参数
 # 大脑智能体最大思考时间
 BRAIN_TIMEOUT = 300
 # 每次容忍大脑智能体中间思考的时间间隔，超过这个时间之后自动截断正在生成的思维过程，并发送到对话中进行提前回复
 BRAIN_CUT_TIME_DURATION = 5
+
+# 默认智能体名称
+AGENT_NAME = "Ruka"
+USER_NAME = "鹿过"
+
+
 
 ### LLM模型配置
 # 默认全局LLM配置（用于本项目非智能体相关的数据清洗、快速调试

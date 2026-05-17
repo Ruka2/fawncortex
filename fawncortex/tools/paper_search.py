@@ -7,7 +7,7 @@ Semantic Scholar 学术论文搜索工具集
 官方文档：https://api.semanticscholar.org/api-docs/
 
 使用方式（同步工具函数）：
-    from deerberry.tools.paper_search import search_papers, get_paper_details
+    from fawncortex.tools.paper_search import search_papers, get_paper_details
     toolkit.register_tool_function(search_papers)
     toolkit.register_tool_function(get_paper_details)
 
