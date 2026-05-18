@@ -24,12 +24,7 @@ from fawncortex.agent.reflection_agent import ReflectionAgent
 from fawncortex.pipeline.event_controller import BackgroundBrainAgent
 from fawncortex.pipeline.output_scheduler import OutputScheduler
 
-
-# =============================================================================
-# 配置常量
-# =============================================================================
-# 每轮对话最多允许的中间介入次数
-MAX_MIDWAY_INTERVENTIONS = 12
+import config
 
 
 # =============================================================================
@@ -101,7 +96,7 @@ async def midway_watcher(
             continue
 
         # 检查介入次数上限
-        if intervention_count >= MAX_MIDWAY_INTERVENTIONS:
+        if intervention_count >= config.MAX_MIDWAY_INTERVENTIONS:
             break
 
         # ── 触发中间介入 ──

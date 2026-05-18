@@ -274,5 +274,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(config.FAWNCORTEX_PORT, "8259")
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("server:app", 
+                host="0.0.0.0", 
+                port=config.FAWNCORTEX_PORT, 
+                reload=False
+                )
