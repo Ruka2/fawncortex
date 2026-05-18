@@ -68,7 +68,7 @@
             background: #f44336;
         }
         .video-status-dot.connected {
-            background: #4caf50;
+            background: var(--primary-color);
             animation: pulse 2s infinite;
         }
         .video-controls {
@@ -138,6 +138,7 @@
             <div class="header-title">FawnCortex 智能体对话系统 — Live</div>
             <div class="header-status">
                 <span id="connection-status" class="status-dot disconnected">未连接</span>
+                <span style="font-size:12px;color:#888;margin-left:12px;">监听面板请访问 <a href="/" style="color:#07c160;">/index</a></span>
             </div>
         </header>
 
@@ -156,7 +157,9 @@
                 <div class="chat-input-area">
                     <textarea id="user-input" placeholder="输入消息，按 Enter 发送..." rows="2"></textarea>
                     <button id="send-btn" class="send-btn">发送</button>
+                    <button id="voice-call-btn" class="voice-call-btn" title="语音通话">语音通话</button>
                 </div>
+                <div id="voice-status-line" class="voice-status-line"></div>
 
                 <!-- 名称配置区域 -->
                 <div class="name-config-area">
@@ -168,7 +171,7 @@
                         <label for="user-name-input">用户名称</label>
                         <input type="text" id="user-name-input" value="鹿过" placeholder="用户名称">
                     </div>
-                    <button id="save-names-btn" class="save-names-btn">💾 保存名称</button>
+                    <button id="save-names-btn" class="save-names-btn">设置名称</button>
                 </div>
             </div>
 
@@ -189,7 +192,7 @@
                 </div>
                 <div class="video-controls">
                     <button id="video-play-btn" class="video-btn" disabled>⏸ 暂停</button>
-                    <button id="video-capture-btn" class="video-btn" style="background:#4caf50;">🖥️ 选择 VTS 窗口</button>
+                    <button id="video-capture-btn" class="video-btn" style="background:#4caf50;">连接VTS窗口</button>
                 </div>
             </div>
         </div>
@@ -198,6 +201,10 @@
     <!-- 音频播放器（隐藏，用于 TTS 播放控制） -->
     <audio id="tts-player" style="display:none;"></audio>
 
+    <!-- ONNX Runtime Web（vad-web 的依赖，必须先加载） -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
+    <!-- VAD Web（本地托管） -->
+    <script src="/static/js/vad/bundle.min.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

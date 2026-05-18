@@ -53,11 +53,13 @@ from fawncortex.tools.search_memory import (
 from fawncortex.tools.paper_search import (
     search_papers,
     get_paper_details,
-    search_authors,
     read_paper,
 )
 from fawncortex.tools.get_current_time import get_current_time
+from fawncortex.tools.online_search import online_search
+
 from fawncortex.components.voice.tts import SiliconFlowCosyVoice
+from fawncortex.components.voice.asr import SiliconFlowASR
 from fawncortex.components.body.vts_controller import VTSController
 from fawncortex.components.body.emotion_animate import (
     animate_open_mouse,
@@ -441,6 +443,7 @@ class FawnCortexEngine:
         self.brain_bg: Optional[BackgroundBrainAgent] = None
         self.front_stage: Optional[FrontStagePipeline] = None
         self.long_term_memory = None
+        self.asr: Optional[SiliconFlowASR] = None
 
         # 运行时状态
         self.round_num = 0
@@ -465,6 +468,22 @@ class FawnCortexEngine:
     async def send_user_input(self, text: str) -> None:
         """外部调用：发送用户输入到引擎。"""
         await self.user_input_queue.put(text)
+
+    async def send_audio_input(self, audio_path: str) -> str:
+        """外部调用：发送音频文件到引擎，经 ASR 转录后送入对话流程。
+
+        Args:
+            audio_path: 本地音频文件路径
+
+        Returns:
+            ASR 转录后的文本
+        """
+        if self.asr is None:
+            raise RuntimeError("ASR 未初始化")
+        text = await self.asr.transcribe(audio_path)
+        if text:
+            await self.user_input_queue.put(text)
+        return text
 
     async def update_names(self, agent_name: str, user_name: str) -> None:
         """更新 Agent 名称和用户名，重新创建 ChatAgent 以应用新名称。
@@ -585,6 +604,16 @@ class FawnCortexEngine:
         )
         asyncio.create_task(self.scheduler.run())
 
+        # 1.5 ASR 语音识别
+        if config.ASR_API_KEY:
+            try:
+                self.asr = SiliconFlowASR()
+                print("[init] ASR 已初始化")
+            except Exception as e:
+                print(f"[init] ⚠️  ASR 初始化失败: {e}")
+        else:
+            print("[init] ⚠️  ASR_API_KEY 未配置，语音输入功能不可用")
+
         # 2. 长期记忆
         memory_cfg = config.LLM_ROLE_CONFIG.get("memory", {})
         self.long_term_memory = create_long_term_memory(
@@ -621,7 +650,7 @@ class FawnCortexEngine:
         toolkit.register_tool_function(search_papers)
         toolkit.register_tool_function(read_paper)
         toolkit.register_tool_function(get_paper_details)
-        toolkit.register_tool_function(search_authors)
+        toolkit.register_tool_function(online_search)
         toolkit.register_tool_function(get_current_time)
 
         self.brain_agent = BrainAgent(
@@ -699,6 +728,9 @@ class FawnCortexEngine:
                             agent.reset_token_stats()
                     if self.brain_agent and hasattr(self.brain_agent, 'reset_token_stats'):
                         self.brain_agent.reset_token_stats()
+                        
+                    # ── 打断上一轮输出 ──
+                    await self.scheduler.interrupt()
 
                     await self.emitter.emit("round_start", {
                         "round_id": round_num,
@@ -712,8 +744,6 @@ class FawnCortexEngine:
                     round_start = time.perf_counter()
                     self.latency_tracker.start_round(round_num, user_input)
 
-                    # ── 打断上一轮输出 ──
-                    await self.scheduler.interrupt()
 
                     # ── 向后台 BrainAgent 投递事件 ──
                     await self.bus.publish("user.input", UserInputEvent(

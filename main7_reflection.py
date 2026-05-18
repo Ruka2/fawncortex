@@ -35,10 +35,10 @@ from fawncortex.tools.search_memory import (
 from fawncortex.tools.paper_search import (
     search_papers,
     get_paper_details,
-    search_authors,
     read_paper,
 )
 from fawncortex.tools.get_current_time import get_current_time
+from fawncortex.tools.online_search import online_search
 
 # 外部非智能体执行工具
 from fawncortex.components.voice.tts import SiliconFlowCosyVoice
@@ -63,10 +63,7 @@ from fawncortex.pipeline.front_stage_pipeline import FrontStagePipeline
 
 
 
-# =============================================================================
-# 【基础设施】辅助函数
-# =============================================================================
-
+# 快速批量封装模型入口
 def build_model_for_role(role: str, stream: bool = True) -> OpenAIChatModel:
     """ 根据 config.LLM_ROLE_CONFIG 中的角色映射创建 OpenAIChatModel """
     cfg = config.LLM_ROLE_CONFIG.get(role, {})
@@ -85,19 +82,13 @@ def build_model_for_role(role: str, stream: bool = True) -> OpenAIChatModel:
 
 
 
-
-
-
-
-# =============================================================================
-# 【基础设施】主函数
-# =============================================================================
+# 主函数
 async def main() -> None:
-    # ── 0. 初始化日志 ──
+    # ── 初始化日志 ──
     enable_file_logging()
     latency_tracker = LatencyTracker()
 
-    # ── 1. 初始化 TTS + VTS + OutputScheduler（语音/表情输出轨道）──
+    # ── 初始化 TTS + VTS -> OutputScheduler（语音输出和表情输出同轨道）──
     tts = SiliconFlowCosyVoice(
         api_key=config.TTS_API_KEY,
         api_url=config.TTS_BASE_URL,
@@ -116,9 +107,9 @@ async def main() -> None:
     scheduler = OutputScheduler(tts=tts, vts=vts, latency_tracker=latency_tracker)
     asyncio.create_task(scheduler.run())
     print(f"[init] TTS 已创建: {config.TTS_MODEL_NAME}, {config.TTS_VOICE}")
-    print("[init] OutputScheduler 已启动")
+    print("[init] OutputScheduler 已完成启动")
 
-    # ── 2. 初始化长期记忆 ──
+    # ── 初始化长期记忆实例（mem0） ──
     memory_cfg = config.LLM_ROLE_CONFIG.get("memory", {})
     long_term_memory = create_long_term_memory(
         agent_name=config.AGENT_NAME,
@@ -137,14 +128,15 @@ async def main() -> None:
     print(f"[init] 长期记忆已初始化: {config.MEM0_HISTORY_DB_PATH}")
 
 
-    # ── 3. 按角色创建专用大模型实例 ──
+    # ── 按角色创建专用大模型实例 ──
     chat_model = build_model_for_role("chat", stream=config.STREAM)
     emotion_model = build_model_for_role("emotion", stream=config.STREAM)
     brain_model = build_model_for_role("brain", stream=config.STREAM)
     reflection_model = build_model_for_role("reflection", stream=config.STREAM)
 
-    print("[init] 多角色 LLM 配置映射:")
-    for role, model in [
+    # 仅打印各个智能体的模型配置
+    print("[init] 多智能体的LLM配置映射:")
+    for role, _ in [
         ("chat", chat_model),
         ("emotion", emotion_model),
         ("brain", brain_model),
@@ -155,17 +147,18 @@ async def main() -> None:
         used_base = cfg.get("base_url") or config.LLM_BASE_URL
         print(f"       {role:25s} model={used_model}, base_url={used_base}")
 
-    # ── 4. 初始化核心智能体 ──
+    # ── 初始化核心智能体 ──
     chat_agent = ChatAgent(model=chat_model, agent_name=config.AGENT_NAME)
     emotion_agent = EmotionAgent(model=emotion_model)
 
+    # 组装大脑智能体的工具
     toolkit = Toolkit()
     toolkit.register_tool_function(retrieve_from_memory)
     toolkit.register_tool_function(record_to_memory)
     toolkit.register_tool_function(search_papers)
     toolkit.register_tool_function(read_paper)
     toolkit.register_tool_function(get_paper_details)
-    toolkit.register_tool_function(search_authors)
+    toolkit.register_tool_function(online_search)
     toolkit.register_tool_function(get_current_time)
     schemas = toolkit.get_json_schemas()
     print(f"[init] Brain Agent Toolkit 已组装，共 {len(schemas)} 个工具")
@@ -178,7 +171,7 @@ async def main() -> None:
     reflection_agent = ReflectionAgent(model=reflection_model)
     print("[init] 核心智能体集群已创建: ChatAgent, EmotionAgent, BrainAgent, ReflectionAgent")
 
-    # ── 5. 初始化事件总线 + 后台 BrainAgent ──
+    # ── 初始化事件总线 + 后台 BrainAgent 挂载 ──
     bus = EventBus()
     # BrainAgent 通过 EventBus 订阅 user.input topic
     bus.subscribe("BrainAgent", ["user.input"])
@@ -187,7 +180,7 @@ async def main() -> None:
     brain_task = asyncio.create_task(brain_bg.run())
     print("[init] BackgroundBrainAgent 已启动（后台常驻）")
 
-    # ── 5.5 初始化前台并行管道 ──
+    # ── 初始化前台并行管道 ──
     front_stage = FrontStagePipeline(
         chat_agent=chat_agent,
         emotion_agent=emotion_agent,
@@ -195,26 +188,23 @@ async def main() -> None:
     )
     print("[init] FrontStagePipeline 前台并行管道已创建")
 
-    # ── 6. 主循环：事件驱动的聊天室 ──
+    # ── 主循环：事件驱动的聊天管道 ──
     round_num = 0
     # 中间汇报任务管理（每轮独立）
     current_midway_task: Optional[asyncio.Task] = None
     current_stop_event: Optional[asyncio.Event] = None
-    # 当前轮次的前台表情（用于 midway TTS）
-    current_emotion = "neural"
 
     try:
         while True:
             try:
-                # ── 6.0 读取用户输入 ──
+                # ── 读取用户输入 ──
                 user_input = (
                     await asyncio.get_event_loop().run_in_executor(None, input, "")
                 ).strip()
-
                 if not user_input:
                     continue
 
-                # ── 取消上一轮的 midway_watcher ──
+                # ── 取消上一轮的 midway_watcher（用于中断上轮未完成的中期汇报任务） ──
                 if current_midway_task and not current_midway_task.done():
                     if current_stop_event:
                         current_stop_event.set()
@@ -225,9 +215,11 @@ async def main() -> None:
                         pass
                     current_midway_task = None
                     current_stop_event = None
+                    
+                # 用户新输入到达时，清空 TTS 队列，避免旧消息干扰
+                await scheduler.interrupt()
 
-
-
+                # 初始计数
                 round_num += 1
                 msg = Msg(name="user", content=user_input, role="user")
                 print(f"\n{'='*60}")
@@ -237,11 +229,7 @@ async def main() -> None:
                 round_start = time.perf_counter()
                 latency_tracker.start_round(round_num, user_input)
 
-                # ── 6.1 打断上一轮输出 ──
-                # 【基础设施】用户新输入到达时，清空 TTS 队列，避免旧消息干扰
-                await scheduler.interrupt()
-
-                # ── 6.2 向后台 BrainAgent 投递事件（非阻塞）──
+                # ── 向后台 BrainAgent 投递事件（非阻塞）──
                 # 【BrainAgent】 大脑智能体在后台独立运行，不阻塞前台响应
                 await bus.publish("user.input", UserInputEvent(
                     msg=msg, round_id=round_num
@@ -251,18 +239,20 @@ async def main() -> None:
                 # 【前台智能体】由 FrontStagePipeline 统一封装并行执行 + 结果组合 + 输出调度
                 chat_result, emotion_result, chat_elapsed, emotion_elapsed = await front_stage.respond(msg)
 
-                # 记录当前轮次的表情，如果有以下pipeline想要服用的话
+                # 记录当前轮次的表情，如果有以下pipeline想要复用的话
                 current_emotion, current_tone = EmotionAgent.parse_action(emotion_result.get_text_content())
                 
                 
-                # ── 6.4.5 启动 midway_watcher（中间过程监听器）──
-                # 【阶段】动态阈值计算 + 独立 Task 启动
+                # ── 6.4.5 启动 midway_watcher（中间思考过程的监听器）──
+                # 根据前台回复计算本轮思考可容忍多少时间  FIXME: 此处是一个可改善的点，可采用字符计算、或反思计算、根据TTS市场动态等待的动态设计
                 threshold = reflection_agent.compute_dynamic_threshold(chat_result)
                 print(f"[Midway] 🕐 动态阈值: {threshold:.1f}s（前台回复 {len(chat_result.get_text_content() or '')} 字符）")
                 current_stop_event = asyncio.Event()
                 
                 # FIXME: 因为中间汇报和总结目前不考虑再一次推理表情，所以先使用默认占位符表情防止做出多余的动作
                 current_emotion = "neural"
+                
+                # 创建中期汇报任务
                 current_midway_task = asyncio.create_task(
                     midway_watcher(
                         brain_bg=brain_bg,
@@ -278,12 +268,11 @@ async def main() -> None:
                     )
                 )
 
-                # ── 6.5 等待 BrainAgent 思考结果（带超时，非阻塞前台）──
-                # BRAIN_TIMEOUT = 360.0  # 秒，深度思考，前台没有响应后最大容许大脑智能体的时间，建议后续根据问题复杂度动态调整
+                # ── 等待 BrainAgent 思考结果（带超时，非阻塞前台）──
                 try:
                     brain_output = await asyncio.wait_for(
                         brain_bg.output_queue.get(),
-                        timeout=config.BRAIN_TIMEOUT,
+                        timeout=config.BRAIN_TIMEOUT,  # 前台没有响应后最大容许大脑智能体的时间，建议后续根据问题复杂度动态调整
                     )
                     
                     # brain 完成后，通知 midway_watcher 停止
@@ -308,6 +297,8 @@ async def main() -> None:
 
                         # FIXME: 因为中间汇报和总结目前不考虑再一次推理表情，所以先使用默认占位符表情防止做出多余的动作
                         current_emotion = "neural"
+                        
+                        # 触发总结
                         await brain_summary(
                             chat_agent=chat_agent,
                             scheduler=scheduler,
@@ -325,7 +316,7 @@ async def main() -> None:
                 except asyncio.TimeoutError:
                     print(f"[Reflection] ⏱ BrainAgent 思考超时（>{config.BRAIN_TIMEOUT}s），触发最后一次总结")
 
-                    # ── 1. 先停止 midway_watcher，确保所有 midway 都已入队后再触发 summary ──
+                    # ── 先停止 midway_watcher，确保所有 midway 都已入队后再触发 summary ──
                     if current_stop_event:
                         current_stop_event.set()
                     if current_midway_task and not current_midway_task.done():
@@ -396,7 +387,6 @@ async def main() -> None:
         import traceback
         traceback.print_exc()
     finally:
-        # ── 优雅关闭 ──
         try:
             print("[Shutdown] 正在关闭输出调度器...")
             await scheduler.stop()

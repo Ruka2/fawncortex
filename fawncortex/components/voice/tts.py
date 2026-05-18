@@ -39,8 +39,6 @@ class SiliconFlowCosyVoice:
         voice: str = "FunAudioLLM/CosyVoice2-0.5B:diana",
     ):
         self.api_key = api_key
-        if not self.api_key:
-            raise ValueError("请提供 api_key 参数")
         self.api_url = api_url
         self.model = model
         self.voice = voice

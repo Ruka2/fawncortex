@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ### 项目启动设置
+# 项目服务端口
+FAWNCORTEX_PORT = 8259
 
 # 用于项目管道数值控制的参数
 # 大脑智能体最大思考时间
@@ -70,6 +72,15 @@ EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
 EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "")  # e.g. Qwen/Qwen3-Embedding-0.6B
 
+### ASR语音识别
+# ASR模型
+ASR_API_KEY = os.getenv("ASR_API_KEY", "")
+ASR_BASE_URL = os.getenv("ASR_BASE_URL", "")
+ASR_MODEL_NAME = os.getenv("ASR_MODEL_NAME", "")
+# ASR缓存音频存放位置
+VOICE_ASR_CACHE = "./data/tmp/cache/asr"
+
+
 ### TTS语音合成配置
 # TTS模型
 TTS_API_KEY = os.getenv("TTS_API_KEY", "")
@@ -81,18 +92,21 @@ TTS_VOICE = os.getenv("TTS_VOICE", "")
 
 ### 项目文件存放位置
 # 缓存数据存放位置
-MEM0_VECTOR_STORE_PATH = os.getenv("MEM0_VECTOR_STORE_PATH", "./data/db/mem0_embedd_chroma")
-MEM0_HISTORY_DB_PATH = os.getenv("MEM0_HISTORY_DB_PATH", "./data/db/raw_history.db")
+MEM0_VECTOR_STORE_PATH = "./data/db/mem0_embedd_chroma"
+MEM0_HISTORY_DB_PATH = "./data/db/raw_history.db"
 
 # 日志存放位置
-LOG_DIR = os.getenv("LOG_DIR", "./logs")
+LOG_DIR = "./logs"
 
 ### 外部接口设置
 # Vtube Studio 端口配置
-VTS_HOST = os.getenv("VTS_HOST", "localhost")
-VTS_PORT = int(os.getenv("VTS_PORT", "25565"))
+VTS_HOST = "localhost"
+VTS_PORT = 25565
 
 
 ### Semantic Scholar 论文搜索配置
 S2_API_KEY = os.getenv("S2_API_KEY", "")
 
+
+### 腾讯联网搜索工具
+TENCENT_CLOUD_WSA_APIKEY = os.getenv("TENCENT_CLOUD_WSA_APIKEY", "")

@@ -34,6 +34,9 @@ const AppState = {
     ttsBubbleQueue: [],           // 已调度给 TTS 的消息队列，按播放顺序排列
     roundTtsAudioDuration: 0,     // 本轮已播放的 TTS 音频总时长（秒）
     subtitleHideTimer: null,      // 字幕隐藏定时器
+    vad: null,                    // VAD 实例（MicVAD）
+    vadEnabled: false,            // VAD 是否正在运行
+    vadLoading: false,            // VAD 是否正在初始化
 };
 
 // DOM 元素缓存
@@ -76,6 +79,10 @@ function cacheDOM() {
     DOM.agentNameInput = document.getElementById('agent-name-input');
     DOM.userNameInput = document.getElementById('user-name-input');
     DOM.saveNamesBtn = document.getElementById('save-names-btn');
+
+    // 语音通话
+    DOM.voiceCallBtn = document.getElementById('voice-call-btn');
+    DOM.voiceStatusLine = document.getElementById('voice-status-line');
 }
 
 // ============================================================
@@ -647,7 +654,7 @@ function addRoundStatsCard(data) {
 
     const titleSpan = document.createElement('span');
     titleSpan.className = 'round-stats-title';
-    titleSpan.textContent = `⏱ 第 ${data.round_id} 轮统计`;
+    titleSpan.textContent = `第 ${data.round_id} 轮统计`;
 
     const toggleSpan = document.createElement('span');
     toggleSpan.className = 'round-stats-toggle';
@@ -1087,6 +1094,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ========== Live 页面：OBS 视频播放器初始化 ==========
     initVideoPlayer();
+
+    // ========== 语音通话按钮 ==========
+    if (DOM.voiceCallBtn) {
+        DOM.voiceCallBtn.addEventListener('click', toggleVoiceCall);
+    }
 });
 
 // ============================================================
@@ -1185,5 +1197,154 @@ function initVideoPlayer() {
         });
     }
 
-    updateVideoStatus(false, '请点击「选择 VTS 窗口」捕获 VTube Studio');
+    updateVideoStatus(false, '请点击「连接VTS窗口」捕获 VTube Studio');
+}
+
+// ============================================================
+// 语音通话（VAD + 麦克风录音）
+// ============================================================
+
+function writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+    }
+}
+
+function float32ToWav(float32Array, sampleRate = 16000) {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+    const blockAlign = numChannels * bitsPerSample / 8;
+    const dataSize = float32Array.length * bitsPerSample / 8;
+
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+    for (let i = 0; i < float32Array.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Array[i]));
+        const int16 = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        view.setInt16(offset, int16, true);
+        offset += 2;
+    }
+
+    return buffer;
+}
+
+async function sendAudioToServer(audio) {
+    try {
+        const wavBuffer = float32ToWav(audio);
+        const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            const base64 = reader.result.split(',')[1];
+            if (AppState.ws && AppState.connected) {
+                AppState.ws.send(JSON.stringify({
+                    type: 'audio_input',
+                    audio_base64: base64,
+                    mime_type: 'audio/wav',
+                }));
+            }
+            updateVoiceStatus('识别中...');
+        };
+        reader.readAsDataURL(blob);
+    } catch (err) {
+        console.error('[VAD] 发送音频失败:', err);
+        updateVoiceStatus('发送失败');
+    }
+}
+
+function updateVoiceButtonState() {
+    const btn = DOM.voiceCallBtn;
+    if (!btn) return;
+
+    if (AppState.vadLoading) {
+        btn.textContent = '加载中...';
+        btn.disabled = true;
+    } else if (AppState.vadEnabled) {
+        btn.textContent = '结束通话';
+        btn.style.background = '#f44336';
+        btn.disabled = false;
+    } else {
+        btn.textContent = '语音通话';
+        btn.style.background = '';  // 回退到 CSS 的 var(--primary-color)
+        btn.disabled = false;
+    }
+}
+
+function updateVoiceStatus(text) {
+    if (DOM.voiceStatusLine) DOM.voiceStatusLine.textContent = text;
+}
+
+async function initVAD() {
+    if (AppState.vad) return;
+    AppState.vadLoading = true;
+    updateVoiceButtonState();
+
+    try {
+        // bundle.min.js 已加载，全局暴露 vad 对象
+        AppState.vad = await vad.MicVAD.new({
+            workletURL: '/static/js/vad/vad.worklet.bundle.min.js',
+            modelURL: '/static/js/vad/silero_vad.onnx',
+            onSpeechStart: () => {
+                console.log('[VAD] 检测到语音开始');
+                updateVoiceStatus('聆听中...');
+            },
+            onSpeechEnd: (audio) => {
+                console.log('[VAD] 检测到语音结束，采样点:', audio.length);
+                sendAudioToServer(audio);
+            },
+            onVADMisfire: () => {
+                console.log('[VAD] 误触发');
+            },
+            baseSampleRate: 16000,
+        });
+        console.log('[VAD] 初始化成功');
+    } catch (err) {
+        console.error('[VAD] 初始化失败:', err);
+        alert('语音通话初始化失败: ' + err.message);
+    } finally {
+        AppState.vadLoading = false;
+        updateVoiceButtonState();
+    }
+}
+
+async function toggleVoiceCall() {
+    if (!AppState.vad) {
+        await initVAD();
+    }
+    if (!AppState.vad) return;
+
+    if (AppState.vadEnabled) {
+        AppState.vad.pause();
+        AppState.vadEnabled = false;
+        updateVoiceButtonState();
+        updateVoiceStatus('');
+        console.log('[VAD] 已暂停');
+    } else {
+        if (!AppState.connected) {
+            alert('未连接到服务器');
+            return;
+        }
+        await AppState.vad.start();
+        AppState.vadEnabled = true;
+        updateVoiceButtonState();
+        updateVoiceStatus('等待说话...');
+        console.log('[VAD] 已开始');
+    }
 }

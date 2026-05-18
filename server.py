@@ -19,9 +19,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import asyncio
+import base64
 import json
 import os
+import uuid
 from typing import Optional
+
+import config
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +37,7 @@ from main8_server import FawnCortexEngine, create_engine
 # FastAPI 应用
 # =============================================================================
 
-app = FastAPI(title="FawnCortex智能体对话系统", version="1.0.0")
+app = FastAPI(title="FawnCortex智能体对话助手", version="1.0.0")
 
 # 静态文件目录
 STATIC_DIR = Path(__file__).parent / "fawncortex" / "components" / "webui" / "static"
@@ -65,7 +69,7 @@ async def index():
     html_path = STATIC_DIR / "index.html"
     if html_path.exists():
         return html_path.read_text(encoding="utf-8")
-    return HTMLResponse(content="<h1>FawnCortex智能体对话系统</h1><p>index.html not found</p>", status_code=404)
+    return HTMLResponse(content="<h1>FawnCortex智能体对话助手</h1><p>index.html not found</p>", status_code=404)
 
 
 @app.get("/live", response_class=HTMLResponse)
@@ -190,6 +194,35 @@ async def websocket_endpoint(websocket: WebSocket):
                         "data": {"message": "输入不能为空"}
                     })
 
+            elif msg_type == "audio_input":
+                audio_base64 = msg.get("audio_base64", "")
+                if not audio_base64:
+                    await websocket.send_json({
+                        "type": "error",
+                        "data": {"message": "音频数据为空"}
+                    })
+                    continue
+
+                try:
+                    audio_bytes = base64.b64decode(audio_base64)
+                    tmp_dir = Path(config.VOICE_ASR_CACHE)
+                    tmp_dir.mkdir(parents=True, exist_ok=True)
+                    tmp_path = tmp_dir / f"audio_{uuid.uuid4().hex}.wav"
+                    with open(tmp_path, "wb") as f:
+                        f.write(audio_bytes)
+
+                    text = await engine.send_audio_input(str(tmp_path))
+                    await websocket.send_json({
+                        "type": "system",
+                        "data": {"status": "asr_result", "text": text}
+                    })
+                except Exception as e:
+                    print(f"[WebSocket] 音频处理失败: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "data": {"message": f"音频识别失败: {str(e)}"}
+                    })
+
             elif msg_type == "reset":
                 await engine.reset_memory()
                 await websocket.send_json({
@@ -241,5 +274,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("FAWNCORTEX_PORT", "8259"))
+    port = int(config.FAWNCORTEX_PORT, "8259")
     uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)

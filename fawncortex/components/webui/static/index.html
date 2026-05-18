@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FawnCortex智能体对话系统 - 监听面板</title>
+    <title>FawnCortex智能体对话助手 - 监听面板</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -32,7 +32,9 @@
                 <div class="chat-input-area">
                     <textarea id="user-input" placeholder="输入消息，按 Enter 发送..." rows="2"></textarea>
                     <button id="send-btn" class="send-btn">发送</button>
+                    <button id="voice-call-btn" class="voice-call-btn" title="语音通话">语音通话</button>
                 </div>
+                <div id="voice-status-line" class="voice-status-line"></div>
 
                 <!-- 名称配置区域 -->
                 <div class="name-config-area">
@@ -44,7 +46,7 @@
                         <label for="user-name-input">用户名称</label>
                         <input type="text" id="user-name-input" value="鹿过" placeholder="用户名称">
                     </div>
-                    <button id="save-names-btn" class="save-names-btn">💾 保存名称</button>
+                    <button id="save-names-btn" class="save-names-btn">设置名称</button>
                 </div>
             </div>
 
@@ -117,6 +119,10 @@
     <!-- 音频播放器（隐藏） -->
     <audio id="tts-player" style="display:none;"></audio>
 
+    <!-- ONNX Runtime Web（vad-web 的依赖，必须先加载） -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
+    <!-- VAD Web（本地托管） -->
+    <script src="/static/js/vad/bundle.min.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

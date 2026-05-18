@@ -1,5 +1,4 @@
 import asyncio
-import json
 import time
 from datetime import datetime
 from typing import Optional
@@ -29,29 +28,13 @@ class BrainAgent:
 
 ### 任务简介
 根据用户的输入和对话历史，分析用户的情绪、意图、隐含需求，并调用合适的工具来完成对话任务，因此你需要：
- 1. 你的所有thinking推理都必须以第一人称“我”角度进行思考。
- 2. 用户可以观察到你的思考过程，因此你应该在思考过程中将部分思考的观点提前告知出来，以此在思考过程中用户可以看到我的想法观点。
-   2.1 你的推理需要注意：用户意图、相关历史记忆、执行任务的结果
-   2.2 多轮对话需要保持较高话题跟随性
-   2.3 对话内容自然
- 3. 你的思考过程可以作为一个对话过程，因此你的整个思考过程必须是一个流畅通顺的思考文本。
- 4. 你的思考过程结束后，不需要总结信息，你已经一步一步从中间思考过程提前回复给了用户你的答案，因此在最后总结这一步时顺着你的中间思考继续续写答案即可。
- 5. 根据用户的问题简单程度酌情使用工具，即简单问题无须调用复杂工具，请根据对话和任务情况使用工具。
-
-在你的推理中，你可能需要注意：
- - 用户意图分析
- - 相关的历史记忆（如有）
- - 所执行的任务结果
-
-### 工具使用
-你可以使用以下工具帮助你的思考：
-- retrieve_from_memory: 检索与用户相关的历史记忆
-- record_to_memory: 记录重要信息到长期记忆
-- search_papers: 按关键词搜索学术论文
-- read_paper: 根据论文ID获取论文正文文本
-- get_paper_details: 根据论文ID获取论文的摘要、参考文献、被引情况，非正文文本
-- search_authors: 搜索论文学者/作者
-- get_current_time: 获取目前最新日期时间，用于检索最新时间的信息时使用
+ 1. 你的所有thinking推理过程都必须以第一人称“我”角度进行思考。
+ 2. 用户可以观察到你的思考过程，因此你应该在思考过程中将部分思考的观点提前告知出来，以此在思考过程中用户可以看到思考中的想法与观点。
+   2.1 你的思考过程可以作为一个对话过程，因此你的整个思考过程必须是一个流畅通顺的思考文本
+   2.2 你的思考过程结束后，不需要总结信息，你需要一步一步从中间思考过程提前回复用户你的答案
+   2.3 你的推理过程需要注意：用户意图、相关历史记忆、执行任务的结果
+   2.4 你需要输出的内容含有：每一步的思考过程、每一步思考后指导下一步聊天的指示内容
+ 3. 根据用户问题难度酌情使用工具，简单问题无须调用复杂工具，请分析对话与任务情况使用工具。
 
 ### 输出要求
 输出自然文本对话，要求：
@@ -120,9 +103,7 @@ class BrainAgent:
         self._last_stream_sync_len: int = 0
 
         # ── Hook 注册 ──
-
         # 闭包 wrapper：避免 bound-method 的 double-self 问题
-
         async def _hook_pre_reasoning(react_self, kwargs):
             """在 _reasoning() 前标记 stream 开始，更新子状态。"""
             try:
@@ -181,16 +162,13 @@ class BrainAgent:
             """在 _acting() 后记录本轮 acting 信息，更新子状态。"""
             try:
                 tool_call = kwargs.get("tool_call", {})
-                tool_name = "unknown" 
-                tool_name = ""   # FIXME: 临时将不调用工具的异常兜底改为空
+                tool_name = ""
                 tool_input = {}
                 if isinstance(tool_call, dict):
-                    # tool_name = tool_call.get("name", "unknown")
-                    tool_name = tool_call.get("name", "")     # FIXME: 临时将不调用工具的异常兜底改为空
+                    tool_name = tool_call.get("name", "")
                     tool_input = tool_call.get("input", {})
                 elif hasattr(tool_call, "name"):
-                    # tool_name = getattr(tool_call, "name", "unknown")
-                    tool_name = getattr(tool_call, "name", "")     # FIXME: 临时将不调用工具的异常兜底改为空
+                    tool_name = getattr(tool_call, "name", "")
                     if hasattr(tool_call, "input"):
                         tool_input = getattr(tool_call, "input", {})
 
@@ -557,7 +535,7 @@ class BrainAgent:
         self._last_output_tokens = 0
 
         # 估算输入 Token（system prompt + memory + user_msg）
-        # 【修复】使用 run_in_executor 避免 tiktoken 阻塞事件循环
+        # 使用 run_in_executor 避免 tiktoken 阻塞事件循环
         try:
             memory_msgs = await self.agent.memory.get_memory()
             memory_text = ""
@@ -613,7 +591,7 @@ class BrainAgent:
 
         data = {
             "insight": text.strip(),
-            "retrieved_memories": get_last_retrieved_memories(),
+            "retrieved_memories": get_last_retrieved_memories(),    # FIXME: 主流程并没有使用相关记忆
         }
 
         return data

@@ -9,13 +9,12 @@ Event-Driven Multi-Agent Chatroom 的核心控制层。
 3. ReflectionAgent — 元认知审判官，控制全场对话时机
 
 【架构标注说明】
-- 【基础设施】：已完整实现，可直接使用
+- ：已完整实现，可直接使用
 - 【策略占位】：仅提供规则骨架/启发式，需你后续替换为 LLM 驱动或精细化规则
 - 【扩展点】：标注了你未来可能扩展的位置
 """
 
 import asyncio
-import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -25,7 +24,7 @@ from agentscope.message import Msg
 
 
 # =============================================================================
-# 【基础设施】事件类型定义
+# 事件类型定义
 # =============================================================================
 
 @dataclass
@@ -68,7 +67,7 @@ class InterventionEvent:
 
 
 # =============================================================================
-# 【基础设施】EventBus — 轻量级异步事件总线（Pub-Sub）
+# EventBus — 轻量级异步事件总线（Pub-Sub）
 # =============================================================================
 
 class EventBus:
@@ -121,7 +120,7 @@ class EventBus:
 
 
 # =============================================================================
-# 【基础设施】BackgroundBrainAgent — BrainAgent 的后台常驻包装器
+# BackgroundBrainAgent — BrainAgent 的后台常驻包装器
 # =============================================================================
 class BackgroundBrainAgent:
     """BrainAgent 的后台常驻包装器。

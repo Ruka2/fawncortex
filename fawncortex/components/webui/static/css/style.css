@@ -433,6 +433,45 @@ body {
     cursor: not-allowed;
 }
 
+/* 语音通话按钮 */
+.voice-call-btn {
+    padding: 0 12px;
+    width: 90px;
+    white-space: nowrap;
+    background: var(--primary-color);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.voice-call-btn:hover {
+    background: var(--primary-hover);
+}
+
+.voice-call-btn:disabled {
+    background: #9e9e9e;
+    cursor: not-allowed;
+}
+
+/* 语音通话状态行 */
+.voice-status-line {
+    font-size: 11px;
+    color: #888;
+    padding: 0px 16px;
+    background: #fafafa;
+    border-bottom: 1px solid var(--border-color);
+    min-height: 18px;
+    text-align: right;
+}
+
 /* 名称配置区域 */
 .name-config-area {
     display: flex;

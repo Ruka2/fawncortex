@@ -135,7 +135,7 @@ class OutputScheduler:
         self.tts.stop()
 
         # 2. 取消当前正在进行的 TTS 和表情任务
-        for attr in ("_current_tts_task", "_current_emotion_task"):   # FIXME: 需不需要加"_current_emotion_task"任务需要debug检查
+        for attr in ("_current_tts_task", "_current_emotion_task"):
             task = getattr(self, attr)
             if task and not task.done():
                 task.cancel()
@@ -183,7 +183,7 @@ class OutputScheduler:
                 except asyncio.CancelledError:
                     print("🔇 TTS/表情 被打断")
                     # 确保子任务都被清理
-                    for t in (tts_task, emotion_task):   # FIXME: 需不需要加 emotion_task 需要DEBUG
+                    for t in (tts_task, emotion_task):
                         if not t.done():
                             t.cancel()
                     await asyncio.gather(tts_task, emotion_task, return_exceptions=True)
