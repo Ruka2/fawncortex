@@ -1173,37 +1173,38 @@ class FawnCortexEngine:
             print(f"[Engine] ⚠️ _emit_chat_context 失败: {e}")
 
 
+
+
 # =============================================================================
 # 便捷入口
 # =============================================================================
+# async def create_engine() -> FawnCortexEngine:
+#     """创建并初始化引擎（但不启动主循环）。"""
+#     engine = FawnCortexEngine()
+#     return engine
 
-async def create_engine() -> FawnCortexEngine:
-    """创建并初始化引擎（但不启动主循环）。"""
-    engine = FawnCortexEngine()
-    return engine
 
+# if __name__ == "__main__":
+#     # 本地测试：模拟输入
+#     async def test():
+#         engine = await create_engine()
 
-if __name__ == "__main__":
-    # 本地测试：模拟输入
-    async def test():
-        engine = await create_engine()
+#         # 注册事件处理器，打印到控制台
+#         def on_event(event):
+#             print(f"[EVENT] {event['type']}: {str(event['data'])[:200]}")
 
-        # 注册事件处理器，打印到控制台
-        def on_event(event):
-            print(f"[EVENT] {event['type']}: {str(event['data'])[:200]}")
+#         for et in [
+#             "user_message", "chat_message", "emotion_update",
+#             "brain_snapshot", "brain_summary", "reflection_judgment",
+#             "tts_text", "interrupt", "round_start", "round_end", "error",
+#         ]:
+#             engine.on(et, on_event)
 
-        for et in [
-            "user_message", "chat_message", "emotion_update",
-            "brain_snapshot", "brain_summary", "reflection_judgment",
-            "tts_text", "interrupt", "round_start", "round_end", "error",
-        ]:
-            engine.on(et, on_event)
+#         await engine.start()
 
-        await engine.start()
+#         # 模拟用户输入
+#         await engine.send_user_input("你好，今天天气怎么样？")
+#         await asyncio.sleep(30)
+#         await engine.stop()
 
-        # 模拟用户输入
-        await engine.send_user_input("你好，今天天气怎么样？")
-        await asyncio.sleep(30)
-        await engine.stop()
-
-    asyncio.run(test())
+#     asyncio.run(test())
