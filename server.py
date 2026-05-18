@@ -31,7 +31,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
-from main8_server import FawnCortexEngine, create_engine
+from web_scheduler import FawnCortexEngine, create_engine
 
 # =============================================================================
 # FastAPI 应用

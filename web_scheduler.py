@@ -1,10 +1,11 @@
 """
 FawnCortex Web 服务端核心引擎（main8_server.py）
 ===============================================
-基于 main7_reflection.py 改造，适配 Web UI 的事件驱动版本。
+基于 chat_cli.py 改造，适配 Web UI 的事件驱动版本。
+信息流走向更推荐直接学习 chat_cli.py，因为本代码基于web事件改动特别多信息流，不利于学习参考。
 
 设计原则：
-- 与前端完全解耦：通过 EventEmitter 事件系统暴露内部状态
+- 与前端解耦：通过 EventEmitter 事件系统暴露内部状态
 - 不修改原有 Agent / Pipeline 代码，仅做包装和适配
 - TTS 音频通过事件发送给前端播放，不再本地 sd.play()
 - 用户输入通过 asyncio.Queue 接收，替代 input()
@@ -1173,15 +1174,13 @@ class FawnCortexEngine:
             print(f"[Engine] ⚠️ _emit_chat_context 失败: {e}")
 
 
-
-
 # =============================================================================
 # 便捷入口
 # =============================================================================
-# async def create_engine() -> FawnCortexEngine:
-#     """创建并初始化引擎（但不启动主循环）。"""
-#     engine = FawnCortexEngine()
-#     return engine
+async def create_engine() -> FawnCortexEngine:
+    """创建并初始化引擎（但不启动主循环）。"""
+    engine = FawnCortexEngine()
+    return engine
 
 
 # if __name__ == "__main__":
