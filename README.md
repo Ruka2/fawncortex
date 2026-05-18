@@ -9,6 +9,7 @@ The project leverages the [AgentScope](https://github.com/agentscope-ai/agentsco
 Essentially, the project remains focused on context management during conversational interaction. Its methodological contribution lies in providing a reference for context pipelines and serving as a learning resource for dialogue-interactive projects. Discussions and sharing are welcome.
 
 Here is [Chinese ReadMe](https://github.com/Ruka2/fawncortex/blob/main/README_ZH.md) and [Method notes(Chinese version)](https://github.com/Ruka2/fawncortex/blob/main/docs/report.md).
+
 ---
 
 ## Features
