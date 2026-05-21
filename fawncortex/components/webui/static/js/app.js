@@ -197,6 +197,9 @@ function handleServerMessage(data) {
         case 'system':
             if (payload.status === 'reset') {
                 handleReset();
+            } else if (payload.status === 'asr_result') {
+                // ASR 结果已由 user_message 渲染为绿色气泡，这里不再重复显示
+                break;
             } else {
                 const sysText = payload.text || payload.message;
                 if (sysText) {

@@ -181,14 +181,72 @@ class SiliconFlowCosyVoice:
         """
         self._stop_playback = False
 
-        # 打开输出流：44100Hz, 单声道(mono), float32
-        stream = sd.OutputStream(
-            samplerate=sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=1024,
-        )
-        stream.start()
+        # ── 设备自适应：尝试打开输出流，支持采样率/设备回退 ──
+        stream = None
+        sample_rates_to_try = [sample_rate, 48000, 44100, 22050]
+        # 去重并保持顺序
+        seen = set()
+        unique_rates = []
+        for sr in sample_rates_to_try:
+            if sr not in seen:
+                seen.add(sr)
+                unique_rates.append(sr)
+
+        # 尝试策略：(默认设备+高延迟) → (自动选择设备+高延迟) → 仅保存
+        strategies = [
+            {"device": None, "latency": "high"},
+            {"device": None, "latency": "low"},
+        ]
+
+        last_error = None
+        for strategy in strategies:
+            for sr in unique_rates:
+                try:
+                    stream = sd.OutputStream(
+                        samplerate=sr,
+                        channels=1,
+                        dtype="float32",
+                        blocksize=1024,
+                        device=strategy["device"],
+                        latency=strategy["latency"],
+                    )
+                    stream.start()
+                    dev_name = strategy["device"]
+                    if dev_name is None:
+                        try:
+                            dev_name = sd.query_devices(kind="output")["name"]
+                        except Exception:
+                            dev_name = "默认输出"
+                    if sr != sample_rate:
+                        print(
+                            f"[TTS] 使用回退采样率 {sr}Hz"
+                            f"（原请求 {sample_rate}Hz 不被当前设备支持）"
+                        )
+                    print(f"[TTS] 音频输出设备: {dev_name}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    continue
+            if stream is not None:
+                break
+
+        if stream is None:
+            print(f"⚠️  TTS 合成/播放失败: {last_error}")
+            try:
+                default_dev = sd.query_devices(kind="output")
+                # print(
+                #     f"    当前默认输出: {default_dev.get('name', 'unknown')}"
+                # )
+            except Exception:
+                pass
+            print("    提示: 蓝牙耳机被其他应用占用时容易出现此问题，"
+                  "可尝试断开重连或关闭其他占用音频的应用")
+            # 无法打开音频设备，仅将数据写入 buffer 后返回
+            async for chunk in response_iter:
+                if chunk:
+                    audio_buffer.write(chunk)
+            return audio_buffer.getvalue()
+
         self._current_stream = stream
 
         pcm_buffer = b""

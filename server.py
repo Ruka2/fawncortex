@@ -212,10 +212,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         f.write(audio_bytes)
 
                     text = await engine.send_audio_input(str(tmp_path))
-                    await websocket.send_json({
-                        "type": "system",
-                        "data": {"status": "asr_result", "text": text}
-                    })
+                    # await websocket.send_json({
+                    #     "type": "system",
+                    #     "data": {"status": "asr_result", "text": text}
+                    # })
                 except Exception as e:
                     print(f"[WebSocket] 音频处理失败: {e}")
                     await websocket.send_json({

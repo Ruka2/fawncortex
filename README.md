@@ -2,6 +2,8 @@
 
 > An AI conversation system powered by multi-agent collaboration, primarily addressing real-time dialogue challenges in cascaded architectures.
 
+![banner](./docs/img1.png)
+
 FawnCortex (Think like a fawn and grow up) is an agent application designed for conversational tasks. It adopts a pipeline architecture of **fast front-stage response + deep back-stage reasoning**, where specialized sub-agents (Chat Agent, Emotion Agent, Brain core, Reflection judge) collaborate to balance low-latency dialogue and high-quality inference by truncating and streaming the brain core's incremental thought process.
 
 The project leverages the [AgentScope](https://github.com/agentscope-ai/agentscope) framework for foundational agent workflows, while also incorporating implementations for long-term memory, web search, and academic paper retrieval. For voice interaction, speech recognition (ASR) and synthesis (TTS) are currently implemented via API calls, so some adaptation may be needed when selecting models for this project.

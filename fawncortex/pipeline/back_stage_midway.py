@@ -157,7 +157,8 @@ async def midway_watcher(
                 name=user_name,
                 # content="[系统提示]\t结合你的思考回答用户",
                 # content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
-                content="[系统提示]\t参考最近系统思考，接着回复用户",
+                # content="[系统提示]\t参考最近系统思考，接着回复用户",
+                content="[系统提示]\t接着呢？请你继续回复用户",
                 role="user",
             )
 
@@ -224,7 +225,7 @@ async def midway_watcher(
             intervention_count += 1
             # 重置计时器，控制 midway 触发频率，避免连续触发
             start_ts = time.perf_counter()
-            print(f"[Midway] ✅ 中间思考过程汇报完成（第 {intervention_count}/{MAX_MIDWAY_INTERVENTIONS} 次）")
+            print(f"[Midway] ✅ 中间思考过程汇报完成（第 {intervention_count}/{config.MAX_MIDWAY_INTERVENTIONS} 次）")
 
         except Exception as e:
             print(f"[Midway] ❌ 中间思考过程汇报失败: {e}")
@@ -302,7 +303,7 @@ async def brain_summary(
     trigger_msg_1 = Msg(
         name=user_name,
         # content="[系统提示]\t以下是你的思考过程",
-        content="[系统提示]\t请你继续系统思考",
+        content="[系统提示]\t请你继续思考",
         role="user",
     )
     await chat_agent.memory.add(trigger_msg_1)
@@ -318,7 +319,8 @@ async def brain_summary(
         name=user_name,
         # content="[系统提示]\t请基于思考过程历史，组织成通顺句子回复用户",
         # content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
-        content="[系统提示]\t参考最近系统思考，接着回复用户",
+        # content="[系统提示]\t参考最近系统思考，接着回复用户",
+        content="[系统提示]\t接着呢？请你继续回复用户",
         role="user",
     )
 
