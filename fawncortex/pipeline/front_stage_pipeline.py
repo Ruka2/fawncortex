@@ -8,10 +8,6 @@ System 1 极速响应轨道的统一封装。
 2. 保留"谁先完成谁先打印"的用户体验
 3. 等两者都完成后，将 (text, emotion) 组合统一调度给 OutputScheduler
 4. 避免 Chat 先完成时用了默认表情而导致 TTS/VTS 不匹配的问题
-
-【设计说明】
-- 与 BackgroundBrainAgent 对应：Brain 有后台包装器，前台也应该有统一的管道封装
-- 主循环不再直接操作 Chat/Emotion 的裸 Task，而是调用 front_stage.respond(msg)
 """
 
 import asyncio

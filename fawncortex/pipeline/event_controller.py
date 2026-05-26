@@ -1,17 +1,10 @@
 """
-聊天室控制器（Chatroom Controller）
-====================================
 Event-Driven Multi-Agent Chatroom 的核心控制层。
 
 本文件实现三大基础设施：
 1. EventBus       — 轻量级 Pub-Sub 异步事件总线
 2. BackgroundBrainAgent — BrainAgent 的后台常驻包装器（支持打断）
-3. ReflectionAgent — 元认知审判官，控制全场对话时机
-
-【架构标注说明】
-- ：已完整实现，可直接使用
-- 【策略占位】：仅提供规则骨架/启发式，需你后续替换为 LLM 驱动或精细化规则
-- 【扩展点】：标注了你未来可能扩展的位置
+3. ReflectionAgent — 反思判断其，控制全场对话上下文是否应该被输出和过滤上下文
 """
 
 import asyncio
@@ -51,13 +44,9 @@ class InterventionEvent:
     """ReflectionAgent 发布的干预事件。
 
     action 枚举：
-   - "summarize" : Brain 有 Chat 未提及的新事实，触发总结插话
-   - "ignore"    : Chat 已正确回答，Brain 结果无需再提
-   - "clarify"   : 发现对话中智能体可能存在信息缺失情况，请求 ChatAgent 追问请求用户补足信息
-   - "stop_brain": Brain 过度思考，强制打断
-   - "none"      : 不干预
-    
-    
+     - TODO: 根据prompt调整
+     - ...
+     - "none"      : 不干预
     """
     topic: str = "reflection.intervention"
     action: str = "none"
@@ -125,7 +114,6 @@ class EventBus:
 class BackgroundBrainAgent:
     """BrainAgent 的后台常驻包装器。
 
-    【设计意图】
     BrainAgent 本身是"调用-等待返回"的同步式 Agent（reply() → 阻塞直到思考完成）。
     本包装器将其转化为：
     1. 常驻后台的 asyncio.Task（通过 run() 启动）
@@ -159,7 +147,6 @@ class BackgroundBrainAgent:
             event = await self.input_queue.get()
 
             if isinstance(event, UserInputEvent):
-                # 【扩展点】未来可在此加入更多事件类型（如 CognitiveControlEvent）
                 await self._on_user_input(event)
 
 

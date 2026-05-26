@@ -9,8 +9,7 @@ FawnCortex Web UI 后端服务器（server.py）
 
 启动方式：
     uvicorn server:app --host 0.0.0.0 --port 8080 --reload
-
-或：
+    或：
     python server.py
 """
 
@@ -21,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import asyncio
 import base64
 import json
-import os
 import uuid
 from typing import Optional
 
@@ -68,7 +66,10 @@ async def index():
     """返回主页面 HTML（监控面板）。"""
     html_path = STATIC_DIR / "index.html"
     if html_path.exists():
-        return html_path.read_text(encoding="utf-8")
+        content = html_path.read_text(encoding="utf-8")
+        content = content.replace("{{AGENT_NAME}}", config.AGENT_NAME)
+        content = content.replace("{{USER_NAME}}", config.USER_NAME)
+        return HTMLResponse(content=content)
     return HTMLResponse(content="<h1>FawnCortex智能体对话助手</h1><p>index.html not found</p>", status_code=404)
 
 
@@ -77,7 +78,10 @@ async def live():
     """返回直播交互页面 HTML（聊天 + OBS 推流画面）。"""
     html_path = STATIC_DIR / "live.html"
     if html_path.exists():
-        return html_path.read_text(encoding="utf-8")
+        content = html_path.read_text(encoding="utf-8")
+        content = content.replace("{{AGENT_NAME}}", config.AGENT_NAME)
+        content = content.replace("{{USER_NAME}}", config.USER_NAME)
+        return HTMLResponse(content=content)
     return HTMLResponse(content="<h1>live.html not found</p>", status_code=404)
 
 
@@ -212,10 +216,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         f.write(audio_bytes)
 
                     text = await engine.send_audio_input(str(tmp_path))
-                    # await websocket.send_json({
-                    #     "type": "system",
-                    #     "data": {"status": "asr_result", "text": text}
-                    # })
+                    
                 except Exception as e:
                     print(f"[WebSocket] 音频处理失败: {e}")
                     await websocket.send_json({

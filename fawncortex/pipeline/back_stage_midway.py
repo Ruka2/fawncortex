@@ -8,10 +8,6 @@
 2. 当满足触发条件时，调用 ChatAgent 生成中间汇报
 3. 将中间汇报通过 OutputScheduler 播报给用户
 4. 将中间汇报结果 observe 回灌到 BrainAgent
-
-设计说明：
-- 从 main7_chatroom.py 解耦出来，使主循环只负责编排，不关注 midway 细节
-- 与 FrontStagePipeline 对应：前台有管道封装，后台 midway 也应有独立模块
 """
 
 import asyncio
@@ -75,18 +71,18 @@ async def midway_watcher(
         if elapsed < threshold:
             continue
 
-        # 检查是否已使用工具（无工具调用则不介入）
+        # 【占位逻辑】检查是否已使用工具（无工具调用则不介入）
         # if not brain_bg.brain.has_used_tools():
         #     break
 
-        # 【新增】避免第1轮 acting 刚完成就触发：
+        # 【占位逻辑】避免第1轮 acting 刚完成就触发：
         # 等 BrainAgent 至少完成 2 轮 reasoning 后，思考内容才足够有价值
-        snapshot = brain_bg.brain.get_react_snapshot()
+        # snapshot = brain_bg.brain.get_react_snapshot()
         # if snapshot.get("total_iters", 0) < 1:  # FIXME: 2 为2轮loop才开始记录，此处先测试一下1轮
         #     print(f"[Midway] ⏳ Brain 仅完成 {snapshot.get('total_iters', 0)} 轮，等待更多思考内容...")
         #     continue
 
-        # 【新增】防御性内容阈值检查：
+        # 防御性内容阈值检查：
         # 只有当 brain 产生了足够实质性的内容（字符数）时才触发 midway，
         # 防止网络波动/空 reasoning 导致无效 midway 触发。
         MIN_MIDWAY_CONTENT_CHARS = 100  # 约 150-200 token，可根据模型调整
@@ -102,12 +98,11 @@ async def midway_watcher(
         # ── 触发中间介入 ──
         print(f"[Midway] ⏱ 已超时 {elapsed:.1f}s (> {threshold:.1f}s)，触发中间思考过程汇报")
 
-        snapshot = brain_bg.brain.get_react_snapshot()
         sub_status = brain_bg.brain.get_current_sub_status()
-
+        
         try:
-
-            # FIXME: 后续要考虑是否还需要保留，因为目前好像会将第一次的大脑思考就载入进去
+            # 【占位逻辑】根据模型种类判断是否要将第一次模型进行任务列表生成（任务规划）时就将内容第一次的大脑思考就载入进去
+            # 目前已经将第一次思考内容就加进去了，此处注释是占位，用于后续快速修改管道
             # new_reasoning = brain_bg.brain.get_new_reasonings_since_last_sync()
             # if new_reasoning:
             #     await chat_agent.memory.add(
@@ -134,12 +129,10 @@ async def midway_watcher(
                     await chat_agent.memory.add(
                         Msg(
                             name=user_name,
-                            # content="[系统提示]\t请你继续思考",
                             content="[系统提示]\t请你继续系统思考",
                             role="user",
                         )
                     )
-
                     await chat_agent.memory.add(
                         Msg(
                             name="brain_center",
@@ -155,10 +148,8 @@ async def midway_watcher(
             # 2. 添加 user 触发消息（无 mark，直接通过 id 清理）
             trigger_msg = Msg(
                 name=user_name,
-                # content="[系统提示]\t结合你的思考回答用户",
-                # content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
-                # content="[系统提示]\t参考最近系统思考，接着回复用户",
-                content="[系统提示]\t接着呢？请你继续回复用户",
+                # content="[系统提示]\t接着呢",
+                content="[系统提示]\t请你将上轮思考总结回复用户",
                 role="user",
             )
 
@@ -179,7 +170,6 @@ async def midway_watcher(
             print(f"💬 [中间思考过程汇报] {midway_text}")
 
             # ── ReflectionAgent 判决： midway 回复质量 ──
-            # 【架构修正】不对 chat_agent.memory 做物理删除，
             # 仅对获取到的历史列表做纯过滤，避免破坏 ChatAgent 上下文。
             _chat_history = await chat_agent.memory.get_memory()
             cleaned_history = [
@@ -203,15 +193,15 @@ async def midway_watcher(
             if action_label in ("summarize", "clarify"):
                 await scheduler.schedule(midway_text, emotion, tone, "midway")
 
-                # FIXME: 目前大脑智能体的思考模式还算正常，是否需要将已对话内容回灌到大脑智能体的上下文需要考虑
+                # 【占位逻辑】目前大脑智能体的思考模式还算正常，是否需要将已对话内容回灌到大脑智能体的上下文需要考虑
                 # 因为目前实际上是chat_agent不停的去复制粘贴brain_agent的信息到自己memory中，也就是chat_agent的输出是完成跟着大脑智能体的，所以目前还不太需要考虑需要回灌信息
                 # observe 回灌到 BrainAgent（assistant 角色）
-                # observe_msg = Msg(
-                #     name="brain_center",
-                #     content=f"已回复用户：{midway_text}",
-                #     role="assistant",
-                # )
-                # await brain_bg.brain.agent.observe(observe_msg)
+                observe_msg = Msg(
+                    name="brain_center",
+                    content=f"{midway_text}",
+                    role="assistant",
+                )
+                await brain_bg.brain.agent.observe(observe_msg)
                 
             elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
                 deleted_count = await chat_agent.memory.delete(
@@ -253,22 +243,20 @@ async def brain_summary(
     被 "completed" 状态和 "timeout" 状态共用，避免代码重复。
     """
 
-    ### 【核心备份代码】大脑智能体的总结回答（非思考过程）
-    # TODO: 目前此处为留档代码，因为新功能不在需要使用大脑总结，以免出现信息重复
+    ### 【占位逻辑】大脑智能体的总结回答（非思考过程）
+    # TODO: 目前此处为留档代码，因为新功能不再需要使用大脑总结，以免出现信息重复，此处留档备份
     # trigger_msg_1 = Msg(
     #     name=user_name,
     #     content="[系统提示]\t请你为用户总结思考下",
     #     role="user",
     # )
     # await chat_agent.memory.add(trigger_msg_1)
-
     # insight_msg = Msg(
     #     name="assistant",
     #     content=f"{summary_thought.strip()}",
     #     role="assistant",
     # )
     # await chat_agent.memory.add(insight_msg)
-
     # trigger_msg_2 = Msg(
     #     name=user_name,
     #     content="[系统提示]\t将你的上轮思考组织成通顺句子，承接与用户的对话",
@@ -276,7 +264,6 @@ async def brain_summary(
     # )
 
     ### 【核心代码】增量采集：只取 midway 截断端点之后的新 thinking ──
-
     # (a) 已完成 ReAct 轮次中，_last_midway_sync_iter 之后的增量 reasoning
     thinking_text = brain_bg.brain.get_new_reasonings_since_last_sync()
 
@@ -293,16 +280,12 @@ async def brain_summary(
         print(f"[BrainSummary] ⚠️ 思考内容为空，跳过总结触发")
         return
 
-    print(f"[BrainSummary] 🧠 增量采集 thinking 内容 "
-          f"{len(thinking_text)} 字符")
+    print(f"[BrainSummary] 🧠 增量采集 thinking 内容 {len(thinking_text)} 字符")
     
     
-    
-
-    # ── 2. 将 thinking 内容注入 chat_agent.memory ──
+    # ── 将 thinking 内容注入 chat_agent.memory ──
     trigger_msg_1 = Msg(
         name=user_name,
-        # content="[系统提示]\t以下是你的思考过程",
         content="[系统提示]\t请你继续思考",
         role="user",
     )
@@ -317,10 +300,8 @@ async def brain_summary(
 
     trigger_msg_2 = Msg(
         name=user_name,
-        # content="[系统提示]\t请基于思考过程历史，组织成通顺句子回复用户",
-        # content="[系统提示]\t基于你上轮系统思考，接着对话话题：",
-        # content="[系统提示]\t参考最近系统思考，接着回复用户",
-        content="[系统提示]\t接着呢？请你继续回复用户",
+        # content="[系统提示]\t接着呢？",
+        content="[系统提示]\t请你将上轮思考总结回复用户",
         role="user",
     )
 
@@ -368,9 +349,7 @@ async def brain_summary(
             current_tone,
             source_label,
         )
-        
-    # elif action_label in ("ignore", "repeat"):
-    #     print(f"[Reflection] ⏭️ 回答被忽略（action=ignore），不进入输出调度器")
+    
         
     elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
         deleted_count = await chat_agent.memory.delete(

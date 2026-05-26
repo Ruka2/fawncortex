@@ -499,6 +499,7 @@ class FawnCortexEngine:
             self.chat_agent = ChatAgent(
                 model=self.chat_model,
                 agent_name=agent_name,
+                user_name=user_name,
                 memory=old_memory,
             )
             print(f"[Engine] 📝 名称已更新: Agent={agent_name}, User={user_name}")
@@ -642,7 +643,11 @@ class FawnCortexEngine:
         self.chat_model = chat_model
 
         # 4. 初始化核心智能体
-        self.chat_agent = ChatAgent(model=chat_model, agent_name=self.agent_name)
+        self.chat_agent = ChatAgent(
+            model=chat_model,
+            agent_name=self.agent_name,
+            user_name=self.user_name,
+        )
         self.emotion_agent = EmotionAgent(model=emotion_model)
 
         toolkit = Toolkit()

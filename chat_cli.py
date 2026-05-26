@@ -1,7 +1,7 @@
 # 项目路径根目录定位
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 # 模型配置表
@@ -10,7 +10,6 @@ import config
 # 核心基础依赖
 import asyncio
 import time
-# from datetime import datetime
 
 # AgentScope 基础依赖
 from agentscope.model import OpenAIChatModel
@@ -148,7 +147,11 @@ async def main() -> None:
         print(f"       {role:25s} model={used_model}, base_url={used_base}")
 
     # ── 初始化核心智能体 ──
-    chat_agent = ChatAgent(model=chat_model, agent_name=config.AGENT_NAME)
+    chat_agent = ChatAgent(
+        model=chat_model,
+        agent_name=config.AGENT_NAME,
+        user_name=config.USER_NAME,
+    )
     emotion_agent = EmotionAgent(model=emotion_model)
 
     # 组装大脑智能体的工具
@@ -216,7 +219,7 @@ async def main() -> None:
                     current_midway_task = None
                     current_stop_event = None
                     
-                # 用户新输入到达时，清空 TTS 队列，避免旧消息干扰
+                # 用户新输入到达时，清空TTS队列同时停止播放TTS，用于用户插话
                 await scheduler.interrupt()
 
                 # 初始计数
@@ -244,7 +247,7 @@ async def main() -> None:
                 
                 
                 # ── 6.4.5 启动 midway_watcher（中间思考过程的监听器）──
-                # 根据前台回复计算本轮思考可容忍多少时间  FIXME: 此处是一个可改善的点，可采用字符计算、或反思计算、根据TTS市场动态等待的动态设计
+                # 根据前台回复计算本轮思考可容忍多少时间  FIXME: 此处是一个可改善的点，可采用字符计算、或反思计算、根据TTS时长动态等待的动态设计
                 threshold = reflection_agent.compute_dynamic_threshold(chat_result)
                 print(f"[Midway] 🕐 动态阈值: {threshold:.1f}s（前台回复 {len(chat_result.get_text_content() or '')} 字符）")
                 current_stop_event = asyncio.Event()

@@ -11,13 +11,13 @@ FAWNCORTEX_PORT = 8259
 # 大脑智能体最大思考时间
 BRAIN_TIMEOUT = 300
 # 每次容忍大脑智能体中间思考的时间间隔，超过这个时间之后自动截断正在生成的思维过程，并发送到对话中进行提前回复
-BRAIN_CUT_TIME_DURATION = 5
+BRAIN_CUT_TIME_DURATION = 2
 # 一轮对话内大脑智能体最大介入触发次数
 MAX_MIDWAY_INTERVENTIONS = 12
 
 # 默认智能体名称
-AGENT_NAME = "Ruka"
-USER_NAME = "鹿过"
+AGENT_NAME = "Luka"
+USER_NAME = "陈大文"
 
 
 

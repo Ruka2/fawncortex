@@ -82,6 +82,10 @@ class _APICache:
 
 _api_cache = _APICache(ttl_sec=60)
 
+# 全局最小请求间隔（秒），避免短时间内高频请求触发 S2 限流
+_MIN_REQUEST_INTERVAL = 0.5
+_last_request_time = 0.0
+
 
 def _build_request(url: str) -> urllib.request.Request:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -98,6 +102,13 @@ def _fetch_json(url: str, max_retries: int = 3) -> dict:
     """
     import time
     import urllib.error
+
+    global _last_request_time
+    now = time.time()
+    elapsed = now - _last_request_time
+    if elapsed < _MIN_REQUEST_INTERVAL:
+        time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+    _last_request_time = time.time()
 
     # 1. 先查缓存
     cached = _api_cache.get(url)
