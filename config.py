@@ -16,8 +16,8 @@ BRAIN_CUT_TIME_DURATION = 2
 MAX_MIDWAY_INTERVENTIONS = 12
 
 # 默认智能体名称
-AGENT_NAME = "Luka"
-USER_NAME = "陈大文"
+AGENT_NAME = "Lucas"
+USER_NAME = "小华"
 
 
 

@@ -24,15 +24,6 @@ import config
 
 
 
-### 中间汇报（Midway Intervention）配置 （FIXME: 这些参数设置都是暂时的，随时可以被替换走）
-# 动态阈值基础值（秒）
-MIDWAY_BASE_THRESHOLD = float(3.0)
-# 动态阈值上限（秒）
-MIDWAY_MAX_THRESHOLD = float(30.0)
-# 阈值随前台回复长度增长的系数（每字符增加的秒数）
-MIDWAY_THRESHOLD_FACTOR = float(0.1)
-
-
 DEFAULT_REFLECTION_SYS_PROMPT = \
 """你一个智能体集群的反思判断器，你的职责是把控智能体的回复质量。
 
@@ -46,11 +37,13 @@ DEFAULT_REFLECTION_SYS_PROMPT = \
  3. 回复内容是否存在知识点重复赘述？
 
 ### 输出格式
-请你先解释原因20字以内，再根据原因从枚举列表 ["yes", "no"] 选择输出一个标记：
+请根据你的判断，从枚举列表选择 ["yes", "no"] 仅只输出一个标记：
  - no: 代表你认为将要回答的内容不是能直接回复给用户。
  - yes: 代表你认为将要回答的内容是可以正常回复给用户。
 """
 
+
+# 请你先解释原因20字以内，再根据原因从枚举列表 ["yes", "no"] 选择输出一个标记：
 
 class ReflectionAgent(SimpleAgent):
     """反思智能体（Meta-Cognitive Controller / 审判官）。
@@ -97,44 +90,37 @@ class ReflectionAgent(SimpleAgent):
     def compute_dynamic_threshold(chat_result: Optional[Msg]) -> float:
         """根据前台对话长度计算动态阈值。
         TODO: 后续需要优化这个等待大脑思考的时间阈值，调整为根据对话任务难度估算，而不是现在基于前台回复的字数的长度系数
-
         逻辑：
         - 前台回复越短 → 用户问题越简单 → 容忍时间越短
         - 前台回复越长 → 用户问题越复杂 → 容忍时间越长
-
         formula: threshold = BASE + chat_length * FACTOR, capped at MAX
         """
-        
+        # 动态阈值基础值（秒）
+        # MIDWAY_BASE_THRESHOLD = float(3.0)
+        # # 动态阈值上限（秒）
+        # MIDWAY_MAX_THRESHOLD = float(30.0)
+        # # 阈值随前台回复长度增长的系数（每字符增加的秒数）
+        # MIDWAY_THRESHOLD_FACTOR = float(0.1)
         # base = MIDWAY_BASE_THRESHOLD
         # max_threshold = MIDWAY_MAX_THRESHOLD
         # factor = MIDWAY_THRESHOLD_FACTOR
-
         # chat_text = chat_result.get_text_content() if chat_result else ""
         # token_count = len(chat_text)  # 简化为字符数，后续可替换为真实 token 数
-
         # threshold = base + token_count * factor
         # threshold = min(threshold, max_threshold)
-        
-        threshold = config.BRAIN_CUT_TIME_DURATION  # FIXME: 测试功能时会采用这样的时间戳
-
+        threshold = config.BRAIN_CUT_TIME_DURATION
         return threshold
 
 
 
     # ========== 去重管道方法 ==========
-
-    # ------------------------------------------------------------------ #
-    # 方案C：自治反射视图
-    # ------------------------------------------------------------------ #
-
     def record_output(self, round_id: int, output_type: str, text: str) -> None:
-        """记录本轮产生的输出，用于下一轮去重比较。
-
-        由主循环（chat_cli.py / web_scheduler.py / back_stage_midway.py）
-        在 midway / summary 产生后主动调用。
-        此处与反思智能体的ShortTermMemory不同原因在于此处的记录是给“对话轮次的上下文进行清洗过滤”，
-        而不是对短期记忆，因此此处的记录输出只是用作于反思智能体的索引记录（硬编码相似度去重、语义相似度去重会使用），
+        """记录所有历史对话产生的输出，用于下一轮去重比较。
+        区别于反思智能体的 observe() 方法，额外引入一个列表做存储是因为observe()虽然也有向量化操作，但是他保存的内容是无须不可索引的，
+        较难从本地向量库中索引回来作为去重，并且对于对话存次（从用户输入->midway->summary作为一轮）而言，只去重本轮比较合适。
+        因此此处的记录输出只是用作于反思智能体的索引记录（硬编码相似度去重、语义相似度去重会使用），而不是对短期记忆，
         也因此，大模型的质量判断仍然使用的是短期记忆，而此处使用的是额外的存储列表
+        # TODO: 目前需要检查硬编码去重和语义去重是不是按轮次去重得
 
         Args:
             round_id: 当前轮次编号。
@@ -146,34 +132,14 @@ class ReflectionAgent(SimpleAgent):
         self._round_outputs[round_id].append({"type": output_type, "text": text})
 
     def clear_round_outputs(self) -> None:
-        """清空轮次输出索引。
-
-        在用户点击"清空聊天记录"或重置会话时调用，
-        避免旧会话的 _round_outputs 污染新会话的去重判断。
-        """
+        """ 清空对话历史的 _round_outputs 输出 """
         print(f"[Reflection] 🗑️ 清空 _round_outputs (原 {len(self._round_outputs)} 轮)")
         self._round_outputs.clear()
 
-    async def _sync_reflection_context(self) -> None:
-        """从自己内存中同步并清洗上下文，形成反射视图。
-
-        清洗规则：过滤掉系统提示消息（role=user 且包含 [系统提示]）。
-        """
-        raw = await self.memory.get_memory()
-        self._reflection_context = [
-            m for m in raw
-            # if not (
-            #     getattr(m, "role", "") == "user"
-            #     and "[系统提示]" in (m.get_text_content() or "")
-            # )
-        ]
-
     def _get_last_round_outputs(self, current_round: int) -> List[str]:
-        """获取上一轮的所有 assistant 输出文本列表。
-
+        """ 获取上一轮的所有 assistant 输出文本列表。
         Args:
             current_round: 当前轮次编号。
-
         Returns:
             上一轮输出文本列表（空列表表示无上一轮或上一轮无输出）。
         """
@@ -185,7 +151,7 @@ class ReflectionAgent(SimpleAgent):
     def _get_current_round_outputs(self, current_round: int) -> List[dict]:
         """获取当前轮次的所有 assistant 输出条目（含 type 和 text）。
 
-        供 _is_semantic_duplicate() 使用，用于检测本轮 midway/summary 之间的语义重复。
+        给 is_semantic_duplicate() 使用，用于检测本轮 midway/summary 之间的语义重复。
         """
         if current_round not in self._round_outputs:
             print(f"[Reflection] 📭 _get_current_round_outputs({current_round}): 空")
@@ -196,7 +162,9 @@ class ReflectionAgent(SimpleAgent):
             print(f"  [{i}] type={o.get('type')}, text='{o.get('text', '')[:50]}...'")
         return outputs
 
-    def _is_hard_duplicate(self, agent_response: str, history_texts: List[str]) -> bool:
+    # == 核心重复判断方法 ==
+    ### 文本硬去重
+    def is_hard_duplicate(self, agent_response: str, history_texts: List[str]) -> bool:
         """文本硬去重：基于 difflib 相似度判断是否与历史输出重复。
 
         Args:
@@ -229,56 +197,55 @@ class ReflectionAgent(SimpleAgent):
 
         return False
 
-    async def _is_semantic_duplicate(
+    ### 向量相似度去重
+    async def is_semantic_duplicate(
         self,
         agent_response: str,
         round_id: int = 0,
     ) -> bool:
         """语义去重：基于本轮历史输出进行向量相似度比较。
+        ### FIXME： 待优化，目前虽然是按轮次计算是否重复，但是向量内存缓存是没有办法清空的，即后续如果主动清空了上下文但是回复了相似的内容，就会被判断重复导致被误ignore
 
-        【改造】与 _is_hard_duplicate() 对齐比较范围：只查当前 round_id 内的
+        与 is_hard_duplicate() 对齐比较范围：只查当前 round_id 内的
         _round_outputs，不再检索全量 LongTermMemory。embedding 优先从
         LongTermMemory 的内存缓存 / ChromaDB 反查获取，避免重复调用 API。
 
-        三级缓存获取 embedding：
-        1. LongTermMemory 内存缓存（零延迟）
-        2. ChromaDB 反查（小延迟，基于 content-hash 的 doc_id）
-        3. 现场计算（兜底）
+        向量会从这2处地方获取embedding：
+        1. LongTermMemory 本地向量库（在对话主循环时已经异步添加，基于doc_id追踪）
+        2. （兜底）如果主流程有时候异步失败了，会根据轮次对话内容现场计算嵌入兜底
 
         Args:
             agent_response: 当前待判断的回复
             round_id: 当前轮次编号
 
         Returns:
-            True 如果与本轮已有输出语义重复。
+            True 是否与已有输出语义重复。
         """
-        # 【扩展】不仅查 _round_outputs，还把 reflection_context 中的 assistant 回复纳入比较
-        outputs = self._get_current_round_outputs(round_id)
+        # 将前台回复 / 上轮回复也纳入比较范围
+        last_round_outputs = self._get_current_round_outputs(round_id)
+        # 处理上下文
         context_outputs = [
             {"text": msg.get_text_content()}
             for msg in self._reflection_context
             if getattr(msg, "role", "") == "assistant" and msg.get_text_content()
         ]
-        all_outputs = outputs + context_outputs
-        if not all_outputs or not agent_response or not agent_response.strip():
-            return False
+        all_outputs = last_round_outputs + context_outputs
 
-        print(
-            f"[Reflection] 🔍 语义去重检查: round={round_id}, "
-            f"candidates={len(all_outputs)} (outputs={len(outputs)}, context={len(context_outputs)})"
-        )
+        # print(
+        #     f"[Reflection] 🔍 语义去重检查: round={round_id}, "
+        #     f"candidates={len(all_outputs)} (outputs={len(last_round_outputs)}, context={len(context_outputs)})"
+        # )
 
-        # 获取待检测文本的 embedding（三级缓存）
+        # 获取待检测文本的embedding嵌入
         query_emb = await self._get_embedding_with_fallback(agent_response.strip())
         if query_emb is None:
             return False
-
+        
         # 遍历所有候选，逐条比较语义相似度
         for item in all_outputs:
             cached_text = item.get("text", "")
             if not cached_text or not cached_text.strip():
                 continue
-
             cached_emb = await self._get_embedding_with_fallback(cached_text.strip())
             if cached_emb is None:
                 continue
@@ -289,41 +256,48 @@ class ReflectionAgent(SimpleAgent):
                 historical = cached_text.strip()[:200]
                 print(
                     f"[Reflection] 🚫 语义去重命中（相似度 {similarity:.3f}），"
-                    f"当前: '{current}...'\n历史: '{historical}...'"
+                    f"\n当前: '{current}'\n历史: '{historical}'"
                 )
                 return True
 
         return False
 
     async def _get_embedding_with_fallback(self, text: str) -> np.ndarray | None:
-        """三级缓存获取 embedding：内存缓存 → ChromaDB → 现场计算。"""
-        # 1. 内存缓存（热数据）
+        """从本地chromadb获取embedding；或兜底现场计算 """
+        # 1. 本地数据
         if self._longterm_memory is not None:
             emb = self._longterm_memory.get_cached_embedding(text)
             if emb is not None:
-                print(f"[Reflection] 💾 embedding 内存缓存命中")
+                # print(f"[Reflection] 💾 embedding 内存缓存命中")
                 return emb
 
-            # 2. ChromaDB 反查（温数据）
+            # FIXME: 目前这一块未通过测试 2. ChromaDB 反查
             emb = self._longterm_memory.get_embedding_by_content(text)
             if emb is not None:
-                print(f"[Reflection] 💾 embedding ChromaDB 命中")
+                # print(f"[Reflection] 💾 embedding ChromaDB 命中")
                 return emb
 
         # 3. 现场计算（兜底）
-        print(f"[Reflection] 💾 embedding 未命中，现场计算...")
+        # print(f"[Reflection] 💾 embedding 未命中，现场计算...")
         return await self._compute_embedding(text)
 
     async def _compute_embedding(self, text: str) -> np.ndarray | None:
-        """调用 Embedding Model 现场计算向量。"""
+        """调用 Embedding Model 现场计算向量。
+
+        计算成功后同步落入 LongTermMemory 内存缓存，供本轮后续 candidate 复用。
+        """
         if self._longterm_memory is None:
             print(f"[Reflection] ⚠️ embedding 计算失败: longterm_memory 未配置")
             return None
         try:
             model = self._longterm_memory._embedding_model
             response = await model([text])
-            print(f"[Reflection] 💾 embedding 现场计算成功")
-            return np.array(response.embeddings[0], dtype=np.float32)
+            emb = np.array(response.embeddings[0], dtype=np.float32)
+            
+            # 现场计算的结果也落入缓存，避免同一轮内重复计算
+            self._longterm_memory._put_embedding_cache(text, emb)
+            print(f"[Reflection] 💾 embedding 现场计算成功并落入缓存")
+            return emb
         except Exception as e:
             print(f"[Reflection] ⚠️ embedding 计算失败: {e}")
             return None
@@ -337,7 +311,7 @@ class ReflectionAgent(SimpleAgent):
         return float(np.dot(a, b) / norm)
     
     
-    async def _llm_quality_judge(
+    async def is_llm_judge(
         self,
         agent_response: str,
     ) -> InterventionEvent:
@@ -385,7 +359,7 @@ f"""智能体将要回答的内容：```
 
 
 
-    # --- 每次返回判断反思（管道流程）---
+    # 【核心反思流程】
     async def judge_each_chat(
         self,
         user_input: str,
@@ -407,11 +381,10 @@ f"""智能体将要回答的内容：```
         Returns:
             InterventionEvent，action 为 clarify / ignore / summarize 等。
         """
-        # 1. 同步反射上下文（从自己 memory 获取并清洗）
-        await self._sync_reflection_context()
+        # 获取反思上下文（从自己智能体 memory 获取并清洗）
+        raw = await self.memory.get_memory()
+        self._reflection_context = [m for m in raw]
         
-        # print("self._round_outputs", json.dumps(self._round_outputs, ensure_ascii=False, indent=2))
-
         # 默认反思是clasify, 即所有回答都先被认定合理的
         action = "clarify"
 
@@ -421,13 +394,15 @@ f"""智能体将要回答的内容：```
         last_round_texts = self._get_last_round_outputs(round_id)
         current_round_items = self._get_current_round_outputs(round_id)
         current_round_texts = [item["text"] for item in current_round_items]
-        # 【关键修复】把 reflection_context 中的 assistant 回复也纳入去重范围，
+        
+        # 把 reflection_context 中的 assistant 回复也纳入去重范围，
         # 捕获 chat 第一轮回复与 brain_summary 之间的重复
         context_texts = [
             msg.get_text_content() for msg in self._reflection_context
             if getattr(msg, "role", "") == "assistant"
         ]
         all_history_texts = last_round_texts + current_round_texts + context_texts
+        
         # 去重
         seen = set()
         deduped = []
@@ -436,20 +411,21 @@ f"""智能体将要回答的内容：```
             if t_stripped and t_stripped not in seen:
                 seen.add(t_stripped)
                 deduped.append(t_stripped)
+                
         print(f"[Reflection] 🔍 硬去重检查: round={round_id}, histories={len(deduped)}, current='{agent_response[:40]}...'")
-        if self._is_hard_duplicate(agent_response, deduped):
+        if self.is_hard_duplicate(agent_response, deduped):
             return InterventionEvent(action="ignore", target="")
 
         # ============================================================
         # 管道步骤 2：语义去重（利用 LongTermMemory 向量检索）
         # ============================================================
-        if await self._is_semantic_duplicate(agent_response, round_id=round_id):
+        if await self.is_semantic_duplicate(agent_response, round_id=round_id):
             return InterventionEvent(action="ignore", target="")
 
         # ============================================================
         # 管道步骤 3：LLM 质量判断
         # ============================================================
-        action = await self._llm_quality_judge(agent_response)
+        action = await self.is_llm_judge(agent_response)
         
         if action == "clarify":
             return InterventionEvent(action="clarify", target="ChatAgent")

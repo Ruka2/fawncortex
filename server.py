@@ -135,7 +135,7 @@ async def websocket_endpoint(websocket: WebSocket):
     engine = await get_engine()
 
     # 注册引擎事件处理器，只转发给当前 WebSocket 连接
-    # 【关键修复】之前用 manager.send_json() 广播给所有连接，
+    # 之前用 manager.send_json() 广播给所有连接，
     # 导致多窗口时每个事件被重复发送。改为只发给当前连接。
     async def on_engine_event(event: dict):
         try:
@@ -263,7 +263,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"[WebSocket] 异常: {e}")
     finally:
-        # 【关键修复】注销所有事件处理器，防止刷新页面后消息重复
+        # 注销所有事件处理器，防止刷新页面后消息重复
         for et in event_types:
             engine.emitter.off(et, on_engine_event)
         manager.disconnect(websocket)

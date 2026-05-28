@@ -14,6 +14,7 @@ Semantic Scholar 学术论文搜索工具集
 API Key 从项目根目录 config.py 的 S2_API_KEY 读取（默认读取环境变量 S2_API_KEY）。
 """
 
+import asyncio
 import json
 import threading
 import time
@@ -98,12 +99,12 @@ def _build_request(url: str) -> urllib.request.Request:
     return req
 
 
-def _fetch_json(url: str, max_retries: int = 3) -> dict:
-    """执行 GET 请求并返回 JSON。
+async def _fetch_json(url: str, max_retries: int = 5) -> dict:
+    """执行 GET 请求并返回 JSON（异步版本，不阻塞事件循环）。
 
     对 HTTP 429（限流）自动进行指数退避重试（1s / 2s / 4s）。
     相同 URL 60 秒内重复调用会直接返回缓存结果，进一步降低 429 概率。
-    并发场景下通过 threading.Lock 保证请求间隔严格生效。
+    HTTP 请求通过 run_in_executor 放到线程池中执行，避免阻塞 asyncio 事件循环。
     """
     global _last_request_time
 
@@ -117,18 +118,24 @@ def _fetch_json(url: str, max_retries: int = 3) -> dict:
         now = time.time()
         elapsed = now - _last_request_time
         if elapsed < _MIN_REQUEST_INTERVAL:
-            time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+            # 用 asyncio.sleep 替代 time.sleep，不阻塞事件循环
+            await asyncio.sleep(_MIN_REQUEST_INTERVAL - elapsed)
         _last_request_time = time.time()
 
-    # 3. 带重试的请求
+    # 3. 带重试的请求（在线程池中执行同步 urllib，不阻塞事件循环）
     req = _build_request(url)
     last_exc: Exception | None = None
+    loop = asyncio.get_event_loop()
     for attempt in range(max_retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                _api_cache.set(url, data)
-                return data
+            # 在线程池中执行同步 HTTP 请求
+            def _do_request():
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            data = await loop.run_in_executor(None, _do_request)
+            _api_cache.set(url, data)
+            return data
         except urllib.error.HTTPError as e:
             last_exc = e
             if e.code == 429 and attempt < max_retries:
@@ -143,9 +150,10 @@ def _fetch_json(url: str, max_retries: int = 3) -> dict:
                     sleep_sec = 2 ** attempt  # 1, 2, 4
 
                 print(f"[paper_search] ⚠️ S2 API 429，第 {attempt + 1}/{max_retries} 次重试，等待 {sleep_sec}s...")
-                time.sleep(sleep_sec)
+                # 用 asyncio.sleep 替代 time.sleep
+                await asyncio.sleep(sleep_sec)
 
-                # 触发 429 后主动后移全局时间戳，让其他并发线程也冷静
+                # 触发 429 后主动后移全局时间戳，让其他并发任务也冷静
                 with _request_lock:
                     _last_request_time = time.time()
                 continue
@@ -173,7 +181,7 @@ def _format_error(action: str, exc: Exception) -> ToolResponse:
 # 工具函数（Agent 可调用的接口）
 # =============================================================================
 
-def search_papers(
+async def search_papers(
     query: str,
     limit: int = 5,
     fields: Optional[str] = None,
@@ -218,7 +226,7 @@ def search_papers(
 
         query_str = _safe_params(params)
         url = f"{_BASE_URL}/paper/search?{query_str}"
-        data = _fetch_json(url)
+        data = await _fetch_json(url)
 
         # 提取核心字段，减少 Token 占用
         papers = data.get("data", [])
@@ -234,7 +242,7 @@ def search_papers(
         return _format_error("论文搜索", e)
 
 
-def get_paper_details(
+async def get_paper_details(
     paper_id: str,
     fields: Optional[str] = None,
 ) -> ToolResponse:
@@ -263,7 +271,7 @@ def get_paper_details(
         query_str = _safe_params(params)
         encoded_id = urllib.parse.quote(paper_id, safe="")
         url = f"{_BASE_URL}/paper/{encoded_id}?{query_str}"
-        data = _fetch_json(url)
+        data = await _fetch_json(url)
 
         text = json.dumps(data, ensure_ascii=False, indent=2)
         return ToolResponse(content=[TextBlock(type="text", text=text)])
@@ -271,7 +279,7 @@ def get_paper_details(
         return _format_error("获取论文详情", e)
 
 
-def search_authors(
+async def search_authors(
     query: str,
     limit: int = 5,
 ) -> ToolResponse:
@@ -295,7 +303,7 @@ def search_authors(
         }
         query_str = _safe_params(params)
         url = f"{_BASE_URL}/author/search?{query_str}"
-        data = _fetch_json(url)
+        data = await _fetch_json(url)
 
         result = {
             "total": data.get("total", 0),
@@ -308,7 +316,7 @@ def search_authors(
         return _format_error("作者搜索", e)
 
 
-def get_paper_citations(
+async def get_paper_citations(
     paper_id: str,
     limit: int = 10,
     fields: Optional[str] = None,
@@ -334,7 +342,7 @@ def get_paper_citations(
         query_str = _safe_params(params)
         encoded_id = urllib.parse.quote(paper_id, safe="")
         url = f"{_BASE_URL}/paper/{encoded_id}/citations?{query_str}"
-        data = _fetch_json(url)
+        data = await _fetch_json(url)
 
         result = {
             "paper_id": paper_id,
@@ -347,7 +355,7 @@ def get_paper_citations(
         return _format_error("获取引用列表", e)
 
 
-def get_paper_references(
+async def get_paper_references(
     paper_id: str,
     limit: int = 10,
     fields: Optional[str] = None,
@@ -373,7 +381,7 @@ def get_paper_references(
         query_str = _safe_params(params)
         encoded_id = urllib.parse.quote(paper_id, safe="")
         url = f"{_BASE_URL}/paper/{encoded_id}/references?{query_str}"
-        data = _fetch_json(url)
+        data = await _fetch_json(url)
 
         result = {
             "paper_id": paper_id,
@@ -390,7 +398,7 @@ def get_paper_references(
 # 论文全文读取工具
 # =============================================================================
 
-def get_paper_pdf_url(
+async def get_paper_pdf_url(
     paper_id: str,
 ) -> ToolResponse:
     """查询某篇论文的开放获取 PDF 链接。
@@ -411,7 +419,7 @@ def get_paper_pdf_url(
         query_str = _safe_params(params)
         encoded_id = urllib.parse.quote(paper_id, safe="")
         url = f"{_BASE_URL}/paper/{encoded_id}?{query_str}"
-        data = _fetch_json(url)
+        data = await _fetch_json(url)
 
         result = {
             "paper_id": paper_id,
@@ -425,7 +433,7 @@ def get_paper_pdf_url(
         return _format_error("获取 PDF 链接", e)
 
 
-def read_paper_by_url(
+async def read_paper_by_url(
     pdf_url: str,
     max_pages: int = 0,
 ) -> ToolResponse:
@@ -456,46 +464,51 @@ def read_paper_by_url(
 
     tmp_path = None
     try:
-        # 1. 下载 PDF 到临时文件
-        req = urllib.request.Request(pdf_url, headers={
-            "Accept": "application/pdf",
-            "User-Agent": "Mozilla/5.0 (Academic Paper Reader)",
-        })
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            pdf_bytes = resp.read()
+        # 1. 下载 PDF 到临时文件（在线程池中执行，不阻塞事件循环）
+        def _download_pdf():
+            req = urllib.request.Request(pdf_url, headers={
+                "Accept": "application/pdf",
+                "User-Agent": "Mozilla/5.0 (Academic Paper Reader)",
+            })
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read()
+
+        pdf_bytes = await asyncio.get_event_loop().run_in_executor(None, _download_pdf)
 
         suffix = os.path.splitext(urllib.parse.urlparse(pdf_url).path)[1] or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
             f.write(pdf_bytes)
             tmp_path = f.name
 
-        # 2. 使用 pymupdf 提取文本
-        doc = fitz.open(tmp_path)
-        total_pages = doc.page_count
-        pages_to_read = total_pages if max_pages <= 0 else min(max_pages, total_pages)
+        # 2. 使用 pymupdf 提取文本（在线程池中执行，不阻塞事件循环）
+        def _extract_text():
+            doc = fitz.open(tmp_path)
+            total_pages = doc.page_count
+            pages_to_read = total_pages if max_pages <= 0 else min(max_pages, total_pages)
 
-        lines: list[str] = []
-        lines.append(f"【论文阅读报告】共 {total_pages} 页，本次读取前 {pages_to_read} 页\n")
+            lines: list[str] = []
+            lines.append(f"【论文阅读报告】共 {total_pages} 页，本次读取前 {pages_to_read} 页\n")
 
-        for i in range(pages_to_read):
-            page = doc.load_page(i)
-            text = page.get_text("text").strip()
-            if not text:
-                # 尝试检测是否为扫描页（图片）
-                images = page.get_images()
-                if images:
-                    lines.append(f"\n--- 第 {i + 1} 页 ---\n[该页为扫描图片，无法提取文字]\n")
+            for i in range(pages_to_read):
+                page = doc.load_page(i)
+                text = page.get_text("text").strip()
+                if not text:
+                    # 尝试检测是否为扫描页（图片）
+                    images = page.get_images()
+                    if images:
+                        lines.append(f"\n--- 第 {i + 1} 页 ---\n[该页为扫描图片，无法提取文字]\n")
+                    else:
+                        lines.append(f"\n--- 第 {i + 1} 页 ---\n[该页无文本内容]\n")
                 else:
-                    lines.append(f"\n--- 第 {i + 1} 页 ---\n[该页无文本内容]\n")
-            else:
-                lines.append(f"\n--- 第 {i + 1} 页 ---\n{text}\n")
+                    lines.append(f"\n--- 第 {i + 1} 页 ---\n{text}\n")
 
-        doc.close()
+            doc.close()
 
-        full_text = "\n".join(lines)
-        # 简单清理：合并多余空行
-        full_text = "\n".join(line for line in full_text.splitlines() if line.strip())
+            full_text = "\n".join(lines)
+            # 简单清理：合并多余空行
+            return "\n".join(line for line in full_text.splitlines() if line.strip())
 
+        full_text = await asyncio.get_event_loop().run_in_executor(None, _extract_text)
         return ToolResponse(content=[TextBlock(type="text", text=full_text)])
     except Exception as e:
         return _format_error("读取论文 PDF", e)
@@ -507,7 +520,7 @@ def read_paper_by_url(
                 pass
 
 
-def read_paper(
+async def read_paper(
     paper_id: str,
     max_pages: int = 0,
 ) -> ToolResponse:
@@ -537,7 +550,7 @@ def read_paper(
     # 方式 1：通过 S2 API 查询 openAccessPdf 链接
     # ============================================================
     try:
-        url_resp = get_paper_pdf_url(paper_id)
+        url_resp = await get_paper_pdf_url(paper_id)
         url_text = url_resp.content[0].get("text", "")
         url_data = json.loads(url_text)
         pdf_url = url_data.get("pdf_url", "")
@@ -577,7 +590,7 @@ def read_paper(
     # ============================================================
     # 读取 PDF 内容
     # ============================================================
-    content_resp = read_paper_by_url(pdf_url, max_pages=max_pages)
+    content_resp = await read_paper_by_url(pdf_url, max_pages=max_pages)
     content_text = content_resp.content[0].get("text", "")
 
     # 拼接论文标题信息

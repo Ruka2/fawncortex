@@ -24,17 +24,17 @@ class BrainAgent:
     """ 大脑智能体封装 """
 
     DEFAULT_SYS_PROMPT = \
-"""你是一个智能体集群的大脑核心，负责深度分析用户对话并为子智能体集群提供对话上的推理辅助。
+"""你是一个智能体集群的大脑核心，负责深度分析用户对话，为智能体集群提供对话上的推理辅助。
 
 ### 任务简介
 根据用户的输入和对话历史，分析用户的情绪、意图、隐含需求，并调用合适的工具来完成对话任务，因此你需要：
- 1. 你的所有thinking推理过程都必须以第一人称“我”角度进行思考。
+ 1. 你的所有的推理过程都必须以第一人称“我”角度进行思考。
  2. 用户可以观察到你的思考过程，因此你应该在思考过程中将部分思考的观点提前告知出来，以此在思考过程中用户可以看到思考中的想法与观点。
-   2.1 你的思考过程可以作为一个对话过程，因此你的整个思考过程必须是一个流畅通顺的思考文本
-   2.2 你的思考过程结束后，不需要总结信息，你需要一步一步从中间思考过程提前回复用户你的答案
-   2.3 你的推理过程需要注意：用户意图、相关历史记忆、执行任务的结果
+   2.1 你的思考过程可以作为一个对话过程，因此你的整个思考过程必须是一个流畅通顺的思考文本，一步解决一个问题
+   2.2 你的思考过程结束后，不需要总结信息
+   2.3 你的推理过程需要注意分析：用户意图、相关历史记忆、执行任务的结果
    2.4 你需要输出的内容含有：每一步的思考过程、每一步思考后指导下一步聊天的指示内容
- 3. 根据用户问题难度酌情使用工具，简单问题无须调用复杂工具，请分析对话与任务情况使用工具。
+ 3. 根据用户问题难度酌情使用工具，简单问题无须调用复杂工具，请分析对话后再挑选与任务适配的工具。
 
 ### 输出要求
 输出自然文本对话，要求：
@@ -142,7 +142,7 @@ class BrainAgent:
                 else:
                     self._sub_status = "idle"
 
-                # 【修复】过滤连续重复的 reasoning 轮次，避免 ReAct 重复思考导致内容冗余
+                # 过滤连续重复的 reasoning 轮次，避免 ReAct 重复思考导致内容冗余
                 is_duplicate = False
                 if text and text.strip() and self._iter_results:
                     last_text = self._iter_results[-1].get("reasoning_text", "")
@@ -200,7 +200,7 @@ class BrainAgent:
                 print(f"[BrainAgent] ⚠️ post_acting hook 异常（已吞）: {e}")
             return output  # 必须原样返回
 
-        # 【关键修复】AgentScope 的 _ReActAgentMeta metaclass 只会在当前类的 attrs
+        # AgentScope 的 _ReActAgentMeta metaclass 只会在当前类的 attrs
         # 中查找 _reasoning/_acting 进行 hook 包装。但 ReActAgent 的这两个方法实际
         # 定义在父类 ReActAgentBase 中，导致 hook 永远不会触发。
         # 因此这里采用 monkey-patch 直接包装，绕过 metaclass 缺陷。
@@ -242,7 +242,7 @@ class BrainAgent:
                     self._has_used_tools = True
                 else:
                     self._sub_status = "idle"
-                # 【修复】过滤连续重复的 reasoning 轮次
+                # 过滤连续重复的 reasoning 轮次
                 is_duplicate = False
                 if text and text.strip() and self._iter_results:
                     last_text = self._iter_results[-1].get("reasoning_text", "")
@@ -362,7 +362,7 @@ class BrainAgent:
         配合 mark_stream_synced() 使用，确保每次 midway 只追加新增部分，
         避免完整快照导致的重复累积。
 
-        【修复】额外检查：如果 delta 和 _iter_results 最后一轮 reasoning 的
+        如果 delta 和 _iter_results 最后一轮 reasoning 的
         完整文本完全相同，说明该轮已完成且已通过 get_new_reasonings_since_last_sync()
         返回，此处返回空以避免 brain_summary/midway_watcher 中重复拼接。
         """
@@ -372,7 +372,7 @@ class BrainAgent:
             return ""
         delta = current[last:]
 
-        # 【修复】如果 delta 和 _iter_results 最后一轮完全相同，返回空
+        # 如果 delta 和 _iter_results 最后一轮完全相同，返回空
         if self._iter_results:
             last_iter_text = self._iter_results[-1].get("reasoning_text", "")
             if last_iter_text and last_iter_text.strip() == delta.strip():

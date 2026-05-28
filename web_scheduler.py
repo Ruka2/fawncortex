@@ -229,7 +229,7 @@ class WebOutputScheduler:
     async def interrupt(self) -> None:
         """打断当前播报并清空队列。
 
-        【关键修复】TTS 合成在线程池中执行同步调用，cancel() 无法中断线程池任务。
+        TTS 合成在线程池中执行同步调用，cancel() 无法中断线程池任务。
         因此使用 asyncio.wait_for 设置 5 秒超时，避免永远等待。
         """
         self.tts.stop()
@@ -722,7 +722,7 @@ class FawnCortexEngine:
                         continue
 
                     # 取消上一轮的 midway_watcher 和 monitor
-                    # 【关键修复】midway 可能卡在 LLM 调用中，cancel() 不生效，增加 5 秒超时
+                    # midway 可能卡在 LLM 调用中，cancel() 不生效，增加 5 秒超时
                     if current_midway_task and not current_midway_task.done():
                         if current_stop_event:
                             current_stop_event.set()
@@ -853,7 +853,7 @@ class FawnCortexEngine:
                         )
 
                         # Brain 完成后停止 midway 和 monitor
-                        # 【关键修复】所有 await 都增加超时，防止卡死
+                        # 所有 await 都增加超时，防止卡死
                         if current_stop_event:
                             current_stop_event.set()
                         if current_midway_task and not current_midway_task.done():
@@ -870,7 +870,7 @@ class FawnCortexEngine:
                                 pass
                         current_monitor_task = None
 
-                        # 【关键修复】推送最终 brain 快照，确保最后一次流式内容被前端接收
+                        # 推送最终 brain 快照，确保最后一次流式内容被前端接收
                         await self.emitter.emit("brain_snapshot", {
                             "round_id": round_num,
                             **self.brain_bg.brain.get_react_snapshot(),
@@ -915,7 +915,7 @@ class FawnCortexEngine:
                                 pass
                         current_monitor_task = None
 
-                        # 【关键修复】推送最终 brain 快照，确保最后一次流式内容被前端接收
+                        # 推送最终 brain 快照，确保最后一次流式内容被前端接收
                         await self.emitter.emit("brain_snapshot", {
                             "round_id": round_num,
                             **self.brain_bg.brain.get_react_snapshot(),
@@ -1109,7 +1109,7 @@ class FawnCortexEngine:
         current_tone: str,
     ) -> None:
         """包装 brain_summary，捕获总结消息和 Reflection 判决并 emit 事件。"""
-        # 【关键修复】等待当前 TTS 播放完成，避免打断正在播放的 midway 语音
+        # 等待当前 TTS 播放完成，避免打断正在播放的 midway 语音
         # await self.scheduler.wait_until_idle()
 
         # Patch chat_agent.reply 来捕获 brain 总结消息（在聊天框中显示）

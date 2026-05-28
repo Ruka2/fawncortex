@@ -118,28 +118,12 @@ async def midway_watcher(
                     brain_bg.brain.mark_stream_synced()
 
             if thinking_text and thinking_text.strip():
-                # await chat_agent.memory.add(
-                #     Msg(
-                #         name=user_name,
-                #         content="[系统提示]\t请你继续系统思考",
-                #         role="user",
-                #     )
-                # )
-                # await chat_agent.memory.add(
-                #     Msg(
-                #         name="brain_center",
-                #         content=f"[系统思考]\t{thinking_text.strip()}",
-                #         role="assistant",
-                #     )
-                # )
-
                 # 标记 reasoning 轮次已同步，供 brain_summary 增量采集
                 brain_bg.brain.mark_midway_synced()
 
-                # 2. 添加 user 触发消息（无 mark，直接通过 id 清理）
+                # 添加 user 触发消息（无 mark，直接通过 id 清理）
                 trigger_msg = Msg(
                     name=user_name,
-                    # content="[系统提示]\t接着呢",
                     content=f"我从你的记忆中找到你的工作记录，请将以下有用的内容回答给我：```{thinking_text}```",
                     role="user",
                 )
@@ -147,17 +131,7 @@ async def midway_watcher(
                 # 让 ReflectionAgent 看到 BrainAgent 的思考过程，以便基于事实判断
                 await reflection_agent.observe(trigger_msg)
 
-                # 【对话智能体】【临时上下文清理】只保留最新最近一轮的系统提示，其余之外全部删除
-                # _memory = await chat_agent.memory.get_memory()
-                # _sys_msgs = [
-                #     _m for _m in _memory
-                #     if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
-                # ]
-                # if len(_sys_msgs) > 1:
-                #     _to_delete = _sys_msgs[:-1]
-                #     _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
-                #     print(f"[Memory] 🗑️ midway 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
-
+                # 调用 LLM
                 midway_msg = await chat_agent.reply(trigger_msg)
 
                 # 同步到 ReflectionAgent 的短期记忆
@@ -166,7 +140,7 @@ async def midway_watcher(
                 midway_text = midway_msg.get_text_content() or ""
                 print(f"💬 [中间思考过程汇报] {midway_text}")
 
-                # ── ReflectionAgent 判决： midway 回复质量 ──
+                # ── ReflectionAgent 判断： midway 回复质量 ──
                 intervention = await reflection_agent.judge_each_chat(
                     user_input=user_input,
                     agent_response=midway_text,
@@ -175,8 +149,8 @@ async def midway_watcher(
                 action_label = intervention.action
                 print(f"💬 [Midway Reflection] {action_label}")
 
-                # 3. TTS 播报中间汇报（使用原始文本）
-                # 【关键】midway 语音可以被用户下一轮输入打断，因为 scheduler.interrupt()
+                # TTS 播报中间汇报（使用原始文本）
+                # midway 语音可以被用户下一轮输入打断，因为 scheduler.interrupt()
                 if action_label in ("summarize", "clarify"):
                     # 发送到输出调度器进行播报
                     await scheduler.schedule(midway_text, emotion, tone, "midway")
@@ -184,7 +158,7 @@ async def midway_watcher(
                     # 同步到 ReflectionAgent 的短期记忆
                     await reflection_agent.observe(midway_msg)
                     
-                    # 【关键】在 judge 之前记录 midway 输出，确保后续 brain_summary 的 judge 能看到它
+                    # 在judge之后记录midway输出，确保后续brain_summary的judge能看到它
                     reflection_agent.record_output(round_id, "midway", midway_text)
                     
                     # 保存 Agent 中间汇报到长期记忆
@@ -242,28 +216,7 @@ async def brain_summary(
 
     被 "completed" 状态和 "timeout" 状态共用，避免代码重复。
     """
-
-    ### 【占位逻辑】大脑智能体的总结回答（非思考过程）
-    # TODO: 目前此处为留档代码，因为新功能不再需要使用大脑总结，以免出现信息重复，此处留档备份
-    # trigger_msg_1 = Msg(
-    #     name=user_name,
-    #     content="[系统提示]\t请你为用户总结思考下",
-    #     role="user",
-    # )
-    # await chat_agent.memory.add(trigger_msg_1)
-    # insight_msg = Msg(
-    #     name="assistant",
-    #     content=f"{summary_thought.strip()}",
-    #     role="assistant",
-    # )
-    # await chat_agent.memory.add(insight_msg)
-    # trigger_msg_2 = Msg(
-    #     name=user_name,
-    #     content="[系统提示]\t将你的上轮思考组织成通顺句子，承接与用户的对话",
-    #     role="user",
-    # )
-
-    ### 【核心代码】增量采集：只取 midway 截断端点之后的新 thinking ──
+    ### 增量采集：只取 midway 截断端点之后的新 thinking ──
     # (a) 已完成 ReAct 轮次中，_last_midway_sync_iter 之后的增量 reasoning
     thinking_text = brain_bg.brain.get_new_reasonings_since_last_sync()
 
@@ -279,48 +232,21 @@ async def brain_summary(
     if not thinking_text or not thinking_text.strip():
         print(f"[BrainSummary] ⚠️ 思考内容为空，跳过总结触发")
         return
-
+    
     print(f"[BrainSummary] 🧠 增量采集 thinking 内容 {len(thinking_text)} 字符")
     
-    
-    # ── 将 thinking 内容注入 chat_agent.memory ──
-    # trigger_msg_1 = Msg(
-    #     name=user_name,
-    #     content="[系统提示]\t请你继续思考",
-    #     role="user",
-    # )
-    # await chat_agent.memory.add(trigger_msg_1)
 
-    # insight_msg = Msg(
-    #     name="brain_center",
-    #     content=f"[系统思考]\t{thinking_text}",
-    #     role="assistant",
-    # )
-    # await chat_agent.memory.add(insight_msg)
-
-    trigger_msg_2 = Msg(
+    trigger_msg = Msg(
         name=user_name,
-        # content="[系统提示]\t接着呢？",
         content=f"我从你的记忆中找到你的工作记录，请将以下有用的内容回答给我：```{thinking_text}```",
         role="user",
     )
     
     # 让 ReflectionAgent 看到 BrainAgent 的思考过程，以便基于事实判断
-    await reflection_agent.observe(trigger_msg_2)
+    await reflection_agent.observe(trigger_msg)
 
-    # 【对话智能体】【临时上下文清理】只保留最新最近一轮的系统提示，其余之外全部删除
-    # _memory = await chat_agent.memory.get_memory()
-    # _sys_msgs = [
-    #     _m for _m in _memory
-    #     if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
-    # ]
-    # if len(_sys_msgs) > 1:
-    #     _to_delete = _sys_msgs[:-1]
-    #     _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
-    #     print(f"[Memory] 🗑️ summary 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
-
-    summary_msg = await chat_agent.reply(trigger_msg_2)
-
+    # 调用 LLM
+    summary_msg = await chat_agent.reply(trigger_msg)
     summary_text = summary_msg.get_text_content() or ""
 
     # ── ReflectionAgent 判决： brain 总结质量 ──

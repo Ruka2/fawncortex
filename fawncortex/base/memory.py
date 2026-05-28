@@ -14,7 +14,6 @@ import hashlib
 import json
 import sqlite3
 import sys
-import uuid
 from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
@@ -428,7 +427,7 @@ class LongTermMemory:
         # 用于防止后台 asyncio.Task 被 GC 回收
         self._pending_tasks: set[asyncio.Task] = set()
 
-        # 【新增】embedding 内存缓存（LRU，上限 1000 条）
+        # embedding 内存缓存（LRU，上限 1000 条）
         # 供 ReflectionAgent 语义去重时直接读取已计算的向量，避免重复调用 API
         self._embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self._embedding_cache_maxsize = 1000
@@ -502,8 +501,10 @@ class LongTermMemory:
         metadata: dict | None,
     ) -> None:
         """实际保存逻辑（在后台 Task 中执行）。"""
-        # 【改造】doc_id 改为基于内容的确定性 hash，支持通过内容反查 ChromaDB
-        doc_id = hashlib.md5(content.encode('utf-8')).hexdigest()
+        # 缓存 key / doc_id 统一基于 strip 后的内容，
+        # 避免 ReflectionAgent 查询时因 .strip() 导致 key 不匹配
+        content_stripped = content.strip()
+        doc_id = hashlib.md5(content_stripped.encode('utf-8')).hexdigest()
         created_at = datetime.now().isoformat()
         meta_dict = {
             "role": role,
@@ -520,24 +521,24 @@ class LongTermMemory:
             self._sync_insert_sqlite,
             doc_id,
             role,
-            content,
+            content_stripped,
             json.dumps(meta_dict, ensure_ascii=False),
             created_at,
         )
 
         # 2. 获取 embedding（AgentScope EmbeddingModel 为异步接口，直接 await）
-        response = await self._embedding_model([content])
+        response = await self._embedding_model([content_stripped])
         embedding = response.embeddings[0]
 
-        # 【新增】同步落入内存缓存（LRU），供 ReflectionAgent 语义去重直接读取
-        self._put_embedding_cache(content, np.array(embedding, dtype=np.float32))
+        # 同步落入内存缓存（LRU），供 ReflectionAgent 语义去重直接读取
+        self._put_embedding_cache(content_stripped, np.array(embedding, dtype=np.float32))
 
         # 3. 写入 ChromaDB（同步 API，在线程池中执行）
         await loop.run_in_executor(
             None,
             self._sync_insert_chroma,
             doc_id,
-            content,
+            content_stripped,
             embedding,
             meta_dict,
         )
@@ -552,7 +553,7 @@ class LongTermMemory:
     ) -> None:
         conn = sqlite3.connect(self._rawtext_db_path)
         try:
-            # 【修复】使用 INSERT OR IGNORE 避免相同 content-hash ID 重复插入时报错
+            # 使用 INSERT OR IGNORE 避免相同 content-hash ID 重复插入时报错
             # doc_id 为 content 的 MD5 hash，同一内容多次保存时保留首次记录
             conn.execute(
                 """
@@ -594,9 +595,11 @@ class LongTermMemory:
 
         供 ReflectionAgent._is_semantic_duplicate() 使用，避免重复调用 API。
         """
-        emb = self._embedding_cache.get(content)
+        # 统一用 strip 后的文本做 key，与 _do_save 保持一致
+        key = content.strip()
+        emb = self._embedding_cache.get(key)
         if emb is not None:
-            self._embedding_cache.move_to_end(content)
+            self._embedding_cache.move_to_end(key)
         return emb
 
     def get_embedding_by_content(self, content: str) -> np.ndarray | None:
@@ -605,13 +608,14 @@ class LongTermMemory:
         利用 doc_id 为 content-hash 的特性，直接精确命中，无需重新计算。
         若记录尚未被后台 task 写入 ChromaDB，则返回 None。
         """
-        doc_id = hashlib.md5(content.encode('utf-8')).hexdigest()
+        # 统一用 strip 后的文本算 doc_id，与 _do_save 保持一致
+        doc_id = hashlib.md5(content.strip().encode('utf-8')).hexdigest()
         try:
             result = self._collection.get(
                 ids=[doc_id],
                 include=["embeddings"],
             )
-            # 【修复】避免直接对 numpy array 做布尔判断（"truth value of array is ambiguous"）
+            # 避免直接对 numpy array 做布尔判断（"truth value of array is ambiguous"）
             if result is None:
                 return None
             embeddings = result.get("embeddings")
