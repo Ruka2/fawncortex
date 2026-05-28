@@ -226,10 +226,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "reset":
                 await engine.reset_memory()
-                await websocket.send_json({
-                    "type": "system",
-                    "data": {"status": "reset_ack", "message": "记忆已清空"}
-                })
+                # await websocket.send_json({
+                #     "type": "system",
+                #     "data": {"status": "reset_ack", "message": "记忆已清空"}
+                # })
 
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong", "data": {}})

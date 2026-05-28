@@ -1,27 +1,44 @@
 """
 记忆管理模块
 ============
-封装短期记忆（ShortTermMemory）与长期记忆（Mem0LongTermMemory）的创建，
+封装三类记忆的创建与管理：
+1. 工具挑选记忆（summarize_mem）—— Mem0LongTermMemory，供 BrainAgent 调用工具时存储高价值提炼记忆。
+2. 短期记忆（ShortTermMemory）—— 滑动窗口式内存，供各 Agent 维护当前会话上下文。
+3. 全量对话归档记忆（LongTermMemory）—— 独立的向量+文本双写系统，按轮次自动归档原始对话。
+
 供主程序和各个 Agent 模块调用。
 """
 
+import asyncio
+import hashlib
+import json
+import sqlite3
 import sys
+import uuid
+from collections import OrderedDict
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import chromadb
+import numpy as np
+from agentscope.embedding import EmbeddingModelBase, OpenAITextEmbedding
+from agentscope.message import Msg
+from agentscope.memory import MemoryBase, Mem0LongTermMemory
+from agentscope.model import OpenAIChatModel
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from mem0.configs.base import MemoryConfig
 from mem0.vector_stores.configs import VectorStoreConfig
-from agentscope.message import Msg
-from agentscope.memory import MemoryBase, Mem0LongTermMemory
-from agentscope.model import OpenAIChatModel
-from agentscope.embedding import OpenAITextEmbedding
 
 
-# 创建长期记忆实例
-def create_long_term_memory(
+# =============================================================================
+# 1. 工具挑选记忆（summarize_mem）
+# =============================================================================
+
+def create_summarize_memory(
     agent_name: str,
     user_name: str,
     vector_store_path: str,
@@ -34,13 +51,13 @@ def create_long_term_memory(
     embedding_base_url: str,
     llm_generate_kwargs: dict | None = None,
 ) -> Mem0LongTermMemory:
-    """创建并返回 Mem0LongTermMemory 实例。
+    """创建并返回 Mem0LongTermMemory 实例（summarize_mem）。
 
     Args:
         agent_name: Agent 标识名，用于记忆隔离。
         user_name: 用户标识名，用于记忆隔离。
-        vector_store_path: ChromaDB 向量存储路径。
-        history_db_path: Mem0 历史数据库路径。
+        vector_store_path: ChromaDB 向量存储目录路径。
+        history_db_path: Mem0 历史数据库文件路径。
         llm_model_name: LLM 模型名称。
         llm_api_key: LLM API 密钥。
         llm_base_url: LLM API 基础地址。
@@ -83,18 +100,21 @@ def create_long_term_memory(
     )
 
 
-# 短期记忆窗口大小
+# =============================================================================
+# 2. 短期记忆（ShortTermMemory）
+# =============================================================================
+
 SHORTTERMMEMORY_WINDOW_SIZE = 30
 
-# 短期记忆
+
 class ShortTermMemory(MemoryBase):
     """带容量上限的短期内存记忆实现。
 
     特性：
-    - 固定容量上限（默认 30 条），超过时自动移除最旧的消息
-    - 保持压缩摘要支持（与 InMemoryMemory 兼容）
-    - 支持消息标记（mark）过滤
-    - 支持去重（默认不允许重复消息）
+    - 固定容量上限（默认 30 条），超过时自动移除最旧的消息。
+    - 保持压缩摘要支持（与 InMemoryMemory 兼容）。
+    - 支持消息标记（mark）过滤。
+    - 支持去重（默认不允许重复消息）。
     """
 
     def __init__(self, max_size: int = SHORTTERMMEMORY_WINDOW_SIZE) -> None:
@@ -335,3 +355,353 @@ class ShortTermMemory(MemoryBase):
                 raise ValueError(
                     "Invalid item format in state_dict for ShortTermMemory."
                 )
+
+
+# =============================================================================
+# 3. 全量对话归档记忆（LongTermMemory）
+# =============================================================================
+
+class LongTermMemory:
+    """全量对话长期记忆归档器（与 summarize_mem / mem0 完全隔离）。
+
+    设计目标：
+    - 将**每一轮**用户输入与 Agent 响应自动归档到独立的向量库 + 文本库。
+    - 与 BrainAgent 的 `record_to_memory` 工具（summarize_mem）用途不同：
+      summarize_mem 存储的是 BrainAgent "挑选提炼" 后的高价值记忆；
+      LongTermMemory 存储的是**原始对话原文**的完整归档。
+
+    核心特性：
+    1. save() —— 异步非阻塞（fire-and-forget）。调用后立即返回，后台完成
+       向量化 + 双写（ChromaDB + SQLite），不阻塞主对话流程。
+    2. retrieve() —— 阻塞式（必须 await）。输入查询文本，返回 top-k 条最相关的
+       历史对话，默认 top_k=10。
+
+    存储结构：
+    - 向量库：data/db/longterm_mem/  （ChromaDB 自动管理内部文件）
+    - 文本库：data/db/longterm_mem/rawtext.db  （SQLite）
+
+    使用示例：
+        # 初始化（通常在 chat_cli.py / web_scheduler.py 的 main() 中）
+        embedding_model = OpenAITextEmbedding(...)
+        longterm_mem = LongTermMemory(
+            agent_name=config.AGENT_NAME,
+            user_name=config.USER_NAME,
+            vector_store_path=config.LONGTERM_VECTOR_STORE_PATH,
+            rawtext_db_path=config.LONGTERM_RAWTEXT_DB_PATH,
+            embedding_model=embedding_model,
+        )
+
+        # 保存（非阻塞，主流程不等待）
+        longterm_mem.save("user", "你好，今天天气怎么样？")
+        longterm_mem.save("assistant", "今天北京晴天，气温 25°C 左右。")
+
+        # 检索（阻塞，必须 await）
+        results = await longterm_mem.retrieve("用户之前问过天气吗？", top_k=10)
+        # results -> [{"id": "...", "role": "user", "content": "...",
+        #              "similarity": 0.92, "metadata": {...}, "created_at": "..."}, ...]
+    """
+
+    def __init__(
+        self,
+        agent_name: str,
+        user_name: str,
+        vector_store_path: str,
+        rawtext_db_path: str,
+        embedding_model: EmbeddingModelBase,
+    ) -> None:
+        self.agent_id = agent_name
+        self.user_id = user_name
+        self._vector_store_path = vector_store_path
+        self._rawtext_db_path = rawtext_db_path
+        self._embedding_model = embedding_model
+
+        # ChromaDB 持久化客户端（同步 API，后续在线程池中调用）
+        self._chroma_client = chromadb.PersistentClient(path=vector_store_path)
+        self._collection = self._chroma_client.get_or_create_collection(
+            name="longterm_mem",
+            metadata={"agent_id": agent_name, "user_id": user_name},
+        )
+
+        # 初始化 SQLite 原始文本库
+        self._init_rawtext_db()
+
+        # 用于防止后台 asyncio.Task 被 GC 回收
+        self._pending_tasks: set[asyncio.Task] = set()
+
+        # 【新增】embedding 内存缓存（LRU，上限 1000 条）
+        # 供 ReflectionAgent 语义去重时直接读取已计算的向量，避免重复调用 API
+        self._embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._embedding_cache_maxsize = 1000
+
+    # ------------------------------------------------------------------ #
+    # 初始化
+    # ------------------------------------------------------------------ #
+
+    def _init_rawtext_db(self) -> None:
+        """创建 SQLite 原始文本表（如果不存在）。"""
+        conn = sqlite3.connect(self._rawtext_db_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_turns (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    agent_id TEXT,
+                    user_id TEXT,
+                    metadata TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_conversation_created_at
+                ON conversation_turns(created_at)
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------ #
+    # 保存（非阻塞，fire-and-forget）
+    # ------------------------------------------------------------------ #
+
+    def save(self, role: str, content: str, metadata: dict | None = None) -> None:
+        """将单条对话保存到长期记忆，后台异步完成向量化。
+
+        调用方**无需 await**，立即返回，不阻塞主流程：
+            longterm_mem.save("user", "你好")
+            # 主流程继续执行...
+
+        后台自动完成：
+        1. 写入 SQLite 原始文本库（conversation_turns 表）。
+        2. 调用 Embedding Model 获取向量。
+        3. 写入 ChromaDB 向量库（longterm_mem collection）。
+
+        若后台保存失败，异常会被捕获并打印到控制台，**不会抛到主流程**。
+
+        Args:
+            role: 发言角色，如 "user" / "assistant"。
+            content: 对话内容。
+            metadata: 可选的附加元数据字典（会 JSON 序列化后存入 SQLite）。
+        """
+        task = asyncio.create_task(
+            self._do_save(role, content, metadata),
+            name=f"ltm_save_{role}_{datetime.now().isoformat()}",
+        )
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        task.add_done_callback(self._on_save_done)
+
+    async def _do_save(
+        self,
+        role: str,
+        content: str,
+        metadata: dict | None,
+    ) -> None:
+        """实际保存逻辑（在后台 Task 中执行）。"""
+        # 【改造】doc_id 改为基于内容的确定性 hash，支持通过内容反查 ChromaDB
+        doc_id = hashlib.md5(content.encode('utf-8')).hexdigest()
+        created_at = datetime.now().isoformat()
+        meta_dict = {
+            "role": role,
+            "agent_id": self.agent_id,
+            "user_id": self.user_id,
+            "created_at": created_at,
+            **(metadata or {}),
+        }
+
+        # 1. 写入 SQLite（同步 IO，在线程池中执行避免阻塞事件循环）
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            self._sync_insert_sqlite,
+            doc_id,
+            role,
+            content,
+            json.dumps(meta_dict, ensure_ascii=False),
+            created_at,
+        )
+
+        # 2. 获取 embedding（AgentScope EmbeddingModel 为异步接口，直接 await）
+        response = await self._embedding_model([content])
+        embedding = response.embeddings[0]
+
+        # 【新增】同步落入内存缓存（LRU），供 ReflectionAgent 语义去重直接读取
+        self._put_embedding_cache(content, np.array(embedding, dtype=np.float32))
+
+        # 3. 写入 ChromaDB（同步 API，在线程池中执行）
+        await loop.run_in_executor(
+            None,
+            self._sync_insert_chroma,
+            doc_id,
+            content,
+            embedding,
+            meta_dict,
+        )
+
+    def _sync_insert_sqlite(
+        self,
+        doc_id: str,
+        role: str,
+        content: str,
+        metadata_json: str,
+        created_at: str,
+    ) -> None:
+        conn = sqlite3.connect(self._rawtext_db_path)
+        try:
+            # 【修复】使用 INSERT OR IGNORE 避免相同 content-hash ID 重复插入时报错
+            # doc_id 为 content 的 MD5 hash，同一内容多次保存时保留首次记录
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO conversation_turns
+                    (id, role, content, agent_id, user_id, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (doc_id, role, content, self.agent_id, self.user_id,
+                 metadata_json, created_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _sync_insert_chroma(
+        self,
+        doc_id: str,
+        content: str,
+        embedding: list[float],
+        metadata: dict,
+    ) -> None:
+        self._collection.add(
+            ids=[doc_id],
+            documents=[content],
+            embeddings=[embedding],
+            metadatas=[metadata],
+        )
+
+    def _put_embedding_cache(self, content: str, embedding: np.ndarray) -> None:
+        """将 embedding 放入内存缓存（LRU 淘汰）。"""
+        if content in self._embedding_cache:
+            self._embedding_cache.move_to_end(content)
+        self._embedding_cache[content] = embedding
+        while len(self._embedding_cache) > self._embedding_cache_maxsize:
+            self._embedding_cache.popitem(last=False)
+
+    def get_cached_embedding(self, content: str) -> np.ndarray | None:
+        """从内存缓存获取已计算的 embedding（零延迟，不查库）。
+
+        供 ReflectionAgent._is_semantic_duplicate() 使用，避免重复调用 API。
+        """
+        emb = self._embedding_cache.get(content)
+        if emb is not None:
+            self._embedding_cache.move_to_end(content)
+        return emb
+
+    def get_embedding_by_content(self, content: str) -> np.ndarray | None:
+        """通过内容反查 ChromaDB 获取 embedding（第二级缓存）。
+
+        利用 doc_id 为 content-hash 的特性，直接精确命中，无需重新计算。
+        若记录尚未被后台 task 写入 ChromaDB，则返回 None。
+        """
+        doc_id = hashlib.md5(content.encode('utf-8')).hexdigest()
+        try:
+            result = self._collection.get(
+                ids=[doc_id],
+                include=["embeddings"],
+            )
+            # 【修复】避免直接对 numpy array 做布尔判断（"truth value of array is ambiguous"）
+            if result is None:
+                return None
+            embeddings = result.get("embeddings")
+            if embeddings is None:
+                return None
+            # embeddings 可能是 list 或 numpy array，统一用 len() 判断
+            if len(embeddings) > 0:
+                return np.array(embeddings[0], dtype=np.float32)
+        except Exception as e:
+            print(f"[LongTermMemory] ⚠️ ChromaDB 反查失败: {e}")
+        return None
+
+    def _on_save_done(self, task: asyncio.Task) -> None:
+        """后台任务完成回调：吞掉异常，不抛到主流程。"""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[LongTermMemory] ⚠️ 后台保存失败: {e}")
+
+    # ------------------------------------------------------------------ #
+    # 检索（阻塞，必须 await）
+    # ------------------------------------------------------------------ #
+
+    async def retrieve(self, query: str, top_k: int = 10) -> list[dict]:
+        """根据对话上下文向量检索相关记忆。
+
+        此方法**必须 await**，是阻塞式的：
+            results = await longterm_mem.retrieve("用户提到了什么？")
+
+        Args:
+            query: 查询文本（通常是当前对话上下文或用户问题）。
+            top_k: 返回最相关的记忆条数，默认 10 条。
+
+        Returns:
+            相关记忆列表，每项为字典：
+            {
+                "id": str,          # 唯一标识
+                "role": str,        # "user" / "assistant"
+                "content": str,     # 原始对话内容
+                "similarity": float,# 相似度分数（0~1，越接近 1 越相关）
+                "metadata": dict,   # 完整元数据
+                "created_at": str,  # ISO 格式时间戳
+            }
+        """
+        # 1. query 向量化
+        response = await self._embedding_model([query])
+        query_embedding = response.embeddings[0]
+
+        # 2. ChromaDB 相似度搜索（同步 API，在线程池中执行）
+        loop = asyncio.get_event_loop()
+        chroma_results = await loop.run_in_executor(
+            None,
+            self._sync_query_chroma,
+            query_embedding,
+            top_k,
+        )
+
+        # 3. 组装结果
+        results: list[dict] = []
+        ids = chroma_results.get("ids", [[]])[0]
+        distances = chroma_results.get("distances", [[]])[0]
+        documents = chroma_results.get("documents", [[]])[0]
+        metadatas = chroma_results.get("metadatas", [[]])[0]
+
+        for i, doc_id in enumerate(ids):
+            meta = metadatas[i] if i < len(metadatas) else {}
+            # Chroma 默认返回 L2 距离，转换为近似相似度（1 - 归一化距离）
+            distance = distances[i] if i < len(distances) else 0.0
+            similarity = max(0.0, 1.0 - distance)
+
+            results.append({
+                "id": doc_id,
+                "role": meta.get("role", "unknown"),
+                "content": documents[i] if i < len(documents) else "",
+                "similarity": round(similarity, 4),
+                "metadata": meta,
+                "created_at": meta.get("created_at", ""),
+            })
+
+        return results
+
+    def _sync_query_chroma(
+        self,
+        query_embedding: list[float],
+        top_k: int,
+    ) -> dict:
+        return self._collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )

@@ -37,6 +37,8 @@ async def midway_watcher(
     stop_event: asyncio.Event,
     user_name: str = "用户",
     user_input: str = "",
+    longterm_mem = None,
+    round_id: int = 0,
 ) -> None:
     """中间过程监听器：在 brain 思考期间，定时检查是否触发中间汇报。
 
@@ -101,117 +103,114 @@ async def midway_watcher(
         sub_status = brain_bg.brain.get_current_sub_status()
         
         try:
-            # 【占位逻辑】根据模型种类判断是否要将第一次模型进行任务列表生成（任务规划）时就将内容第一次的大脑思考就载入进去
-            # 目前已经将第一次思考内容就加进去了，此处注释是占位，用于后续快速修改管道
-            # new_reasoning = brain_bg.brain.get_new_reasonings_since_last_sync()
-            # if new_reasoning:
-            #     await chat_agent.memory.add(
-            #             Msg(
-            #                 name=user_name,
-            #                 content="[系统提示]\t请你后台思考一下",
-            #                 role="user",
-            #             )
-            #     )
-            #     await chat_agent.memory.add(
-            #         Msg(
-            #             name="brain_center",
-            #             content=f"{new_reasoning}",
-            #             role="system",
-            #         )
-            #     )
-            #     brain_bg.brain.mark_midway_synced()
+            # 1. 增量采集：已完成 ReAct 轮次 + 当前流式缓冲区
+            # 双指针采集，与 brain_summary 保持一致，避免多轮 reasoning 间 _stream_buffer
+            # 被重置导致的重复累积问题。
+            thinking_text = brain_bg.brain.get_new_reasonings_since_last_sync()
 
-
-            # 1. 截断点后：当前正在进行的新一轮 reasoning 的流式输出（增量）
             if sub_status == "reasoning":
                 stream_delta = brain_bg.brain.get_stream_buffer_delta()
                 if stream_delta and stream_delta.strip():
-                    await chat_agent.memory.add(
-                        Msg(
-                            name=user_name,
-                            content="[系统提示]\t请你继续系统思考",
-                            role="user",
-                        )
-                    )
-                    await chat_agent.memory.add(
-                        Msg(
-                            name="brain_center",
-                            content=f"[系统思考]\t{stream_delta.strip()}",
-                            role="assistant",
-                        )
-                    )
+                    if thinking_text:
+                        thinking_text += "\n\n" + stream_delta.strip()
+                    else:
+                        thinking_text = stream_delta.strip()
                     brain_bg.brain.mark_stream_synced()
 
-            # 标记 reasoning 轮次已同步，供 brain_summary 增量采集
-            brain_bg.brain.mark_midway_synced()
+            if thinking_text and thinking_text.strip():
+                # await chat_agent.memory.add(
+                #     Msg(
+                #         name=user_name,
+                #         content="[系统提示]\t请你继续系统思考",
+                #         role="user",
+                #     )
+                # )
+                # await chat_agent.memory.add(
+                #     Msg(
+                #         name="brain_center",
+                #         content=f"[系统思考]\t{thinking_text.strip()}",
+                #         role="assistant",
+                #     )
+                # )
 
-            # 2. 添加 user 触发消息（无 mark，直接通过 id 清理）
-            trigger_msg = Msg(
-                name=user_name,
-                # content="[系统提示]\t接着呢",
-                content="[系统提示]\t请你将上轮思考总结回复用户",
-                role="user",
-            )
+                # 标记 reasoning 轮次已同步，供 brain_summary 增量采集
+                brain_bg.brain.mark_midway_synced()
 
-            # 【对话智能体】【临时上下文清理】只保留最新最近一轮的系统提示，其余之外全部删除
-            _memory = await chat_agent.memory.get_memory()
-            _sys_msgs = [
-                _m for _m in _memory
-                if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
-            ]
-            if len(_sys_msgs) > 1:
-                _to_delete = _sys_msgs[:-1]
-                _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
-                print(f"[Memory] 🗑️ midway 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
-
-            midway_msg = await chat_agent.reply(trigger_msg)
-
-            midway_text = midway_msg.get_text_content() or ""
-            print(f"💬 [中间思考过程汇报] {midway_text}")
-
-            # ── ReflectionAgent 判决： midway 回复质量 ──
-            # 仅对获取到的历史列表做纯过滤，避免破坏 ChatAgent 上下文。
-            _chat_history = await chat_agent.memory.get_memory()
-            cleaned_history = [
-                _m for _m in _chat_history
-                if not (getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or ""))
-            ]
-            _filtered_count = len(_chat_history) - len(cleaned_history)
-            if _filtered_count > 0:
-                print(f"[Reflection] 🧹 清洗 {_filtered_count} 条系统提示，清洗后 {len(cleaned_history)} 条")
-
-            intervention = await reflection_agent.judge_each_chat(
-                user_input=user_input,
-                agent_response=midway_text,
-                chat_history=cleaned_history,
-            )
-            action_label = intervention.action
-            print(f"💬 [Midway Reflection] {action_label}")
-
-            # 3. TTS 播报中间汇报（使用原始文本）
-            # 【关键】midway 语音可以被用户下一轮输入打断，因为 scheduler.interrupt()
-            if action_label in ("summarize", "clarify"):
-                await scheduler.schedule(midway_text, emotion, tone, "midway")
-
-                # 【占位逻辑】目前大脑智能体的思考模式还算正常，是否需要将已对话内容回灌到大脑智能体的上下文需要考虑
-                # 因为目前实际上是chat_agent不停的去复制粘贴brain_agent的信息到自己memory中，也就是chat_agent的输出是完成跟着大脑智能体的，所以目前还不太需要考虑需要回灌信息
-                # observe 回灌到 BrainAgent（assistant 角色）
-                observe_msg = Msg(
-                    name="brain_center",
-                    content=f"{midway_text}",
-                    role="assistant",
+                # 2. 添加 user 触发消息（无 mark，直接通过 id 清理）
+                trigger_msg = Msg(
+                    name=user_name,
+                    # content="[系统提示]\t接着呢",
+                    content=f"我从你的记忆中找到你的工作记录，请将以下有用的内容回答给我：```{thinking_text}```",
+                    role="user",
                 )
-                await brain_bg.brain.agent.observe(observe_msg)
                 
-            elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
-                deleted_count = await chat_agent.memory.delete(
-                    msg_ids=[trigger_msg.id, midway_msg.id]
-                )
-                print(f"[Midway Reflection] 🗑️ 忽略回答（action={action_label}），已从 memory 删除 {deleted_count} 条消息")
-                
-            else:
-                print(f"[Midway Reflection] ⚠️ 未知 action='{action_label}'，默认不进入输出调度器")
+                # 让 ReflectionAgent 看到 BrainAgent 的思考过程，以便基于事实判断
+                await reflection_agent.observe(trigger_msg)
 
+                # 【对话智能体】【临时上下文清理】只保留最新最近一轮的系统提示，其余之外全部删除
+                # _memory = await chat_agent.memory.get_memory()
+                # _sys_msgs = [
+                #     _m for _m in _memory
+                #     if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
+                # ]
+                # if len(_sys_msgs) > 1:
+                #     _to_delete = _sys_msgs[:-1]
+                #     _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
+                #     print(f"[Memory] 🗑️ midway 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
+
+                midway_msg = await chat_agent.reply(trigger_msg)
+
+                # 同步到 ReflectionAgent 的短期记忆
+                await reflection_agent.observe(midway_msg)
+
+                midway_text = midway_msg.get_text_content() or ""
+                print(f"💬 [中间思考过程汇报] {midway_text}")
+
+                # ── ReflectionAgent 判决： midway 回复质量 ──
+                intervention = await reflection_agent.judge_each_chat(
+                    user_input=user_input,
+                    agent_response=midway_text,
+                    round_id=round_id,
+                )
+                action_label = intervention.action
+                print(f"💬 [Midway Reflection] {action_label}")
+
+                # 3. TTS 播报中间汇报（使用原始文本）
+                # 【关键】midway 语音可以被用户下一轮输入打断，因为 scheduler.interrupt()
+                if action_label in ("summarize", "clarify"):
+                    # 发送到输出调度器进行播报
+                    await scheduler.schedule(midway_text, emotion, tone, "midway")
+                    
+                    # 同步到 ReflectionAgent 的短期记忆
+                    await reflection_agent.observe(midway_msg)
+                    
+                    # 【关键】在 judge 之前记录 midway 输出，确保后续 brain_summary 的 judge 能看到它
+                    reflection_agent.record_output(round_id, "midway", midway_text)
+                    
+                    # 保存 Agent 中间汇报到长期记忆
+                    if longterm_mem is not None:
+                        longterm_mem.save("assistant", midway_text)
+
+                    # 【占位逻辑】目前大脑智能体的思考模式还算正常，是否需要将已对话内容回灌到大脑智能体的上下文需要考虑
+                    # 因为目前实际上是chat_agent不停的去复制粘贴brain_agent的信息到自己memory中，也就是chat_agent的输出是完成跟着大脑智能体的，所以目前还不太需要考虑需要回灌信息
+                    # observe 回灌到 BrainAgent（assistant 角色）
+                    # observe_msg = Msg(
+                    #     name="brain_center",
+                    #     content=f"{midway_text}",
+                    #     role="assistant",
+                    # )
+                    # await brain_bg.brain.agent.observe(observe_msg)
+                    
+                elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
+                    deleted_count = await chat_agent.memory.delete(
+                        msg_ids=[midway_msg.id]
+                    )
+                    # 同步删除 ReflectionAgent 短期记忆中的对应消息
+                    await reflection_agent.memory.delete(
+                        msg_ids=[midway_msg.id]
+                    )
+                    print(f"[Midway Reflection] 🗑️ 忽略回答（action={action_label}），已从 memory 删除 {deleted_count} 条消息")
+    
             intervention_count += 1
             # 重置计时器，控制 midway 触发频率，避免连续触发
             start_ts = time.perf_counter()
@@ -232,8 +231,9 @@ async def brain_summary(
     user_input: str,
     summary_thought: str,
     brain_bg: BackgroundBrainAgent,
-    source_label: str = "brain_summary",
     user_name: str = "用户",
+    longterm_mem = None,
+    round_id: int = 0,
 ) -> None:
     """基于 brain 的思考结果触发 ChatAgent 生成总结并调度输出。
 
@@ -284,58 +284,50 @@ async def brain_summary(
     
     
     # ── 将 thinking 内容注入 chat_agent.memory ──
-    trigger_msg_1 = Msg(
-        name=user_name,
-        content="[系统提示]\t请你继续思考",
-        role="user",
-    )
-    await chat_agent.memory.add(trigger_msg_1)
+    # trigger_msg_1 = Msg(
+    #     name=user_name,
+    #     content="[系统提示]\t请你继续思考",
+    #     role="user",
+    # )
+    # await chat_agent.memory.add(trigger_msg_1)
 
-    insight_msg = Msg(
-        name="brain_center",
-        content=f"[系统思考]\t{thinking_text}",
-        role="assistant",
-    )
-    await chat_agent.memory.add(insight_msg)
+    # insight_msg = Msg(
+    #     name="brain_center",
+    #     content=f"[系统思考]\t{thinking_text}",
+    #     role="assistant",
+    # )
+    # await chat_agent.memory.add(insight_msg)
 
     trigger_msg_2 = Msg(
         name=user_name,
         # content="[系统提示]\t接着呢？",
-        content="[系统提示]\t请你将上轮思考总结回复用户",
+        content=f"我从你的记忆中找到你的工作记录，请将以下有用的内容回答给我：```{thinking_text}```",
         role="user",
     )
+    
+    # 让 ReflectionAgent 看到 BrainAgent 的思考过程，以便基于事实判断
+    await reflection_agent.observe(trigger_msg_2)
 
     # 【对话智能体】【临时上下文清理】只保留最新最近一轮的系统提示，其余之外全部删除
-    _memory = await chat_agent.memory.get_memory()
-    _sys_msgs = [
-        _m for _m in _memory
-        if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
-    ]
-    if len(_sys_msgs) > 1:
-        _to_delete = _sys_msgs[:-1]
-        _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
-        print(f"[Memory] 🗑️ summary 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
+    # _memory = await chat_agent.memory.get_memory()
+    # _sys_msgs = [
+    #     _m for _m in _memory
+    #     if getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or "")
+    # ]
+    # if len(_sys_msgs) > 1:
+    #     _to_delete = _sys_msgs[:-1]
+    #     _deleted = await chat_agent.memory.delete(msg_ids=[_m.id for _m in _to_delete])
+    #     print(f"[Memory] 🗑️ summary 已清理 {_deleted} 条旧系统提示，保留最新 1 条")
 
     summary_msg = await chat_agent.reply(trigger_msg_2)
 
     summary_text = summary_msg.get_text_content() or ""
 
     # ── ReflectionAgent 判决： brain 总结质量 ──
-    # 【架构修正】不对 chat_agent.memory 做物理删除，
-    # 仅对获取到的历史列表做纯过滤，避免破坏 ChatAgent 上下文。
-    _chat_history = await chat_agent.memory.get_memory()
-    cleaned_history = [
-        _m for _m in _chat_history
-        if not (getattr(_m, "role", "") == "user" and "[系统提示]" in (_m.get_text_content() or ""))
-    ]
-    _filtered_count = len(_chat_history) - len(cleaned_history)
-    if _filtered_count > 0:
-        print(f"[Reflection] 🧹 清洗 {_filtered_count} 条系统提示，清洗后 {len(cleaned_history)} 条")
-
     intervention = await reflection_agent.judge_each_chat(
         user_input=user_input,
         agent_response=summary_text,
-        chat_history=cleaned_history,
+        round_id=round_id,
     )
 
     action_label = intervention.action
@@ -343,23 +335,29 @@ async def brain_summary(
 
     # ── ReflectionAgent 判决后的输出调度 ──
     if action_label in ("summarize", "clarify"):
-        await scheduler.schedule(
-            summary_text,
-            current_emotion,
-            current_tone,
-            source_label,
-        )
-    
+        # 发送到输出调度器中进行回复
+        await scheduler.schedule(summary_text, current_emotion, current_tone, "brain_summary")
         
+        # 同步到 ReflectionAgent 的短期记忆
+        await reflection_agent.observe(summary_msg)
+        
+        # 【关键】在 judge 之前记录 brain_summary 输出，确保去重能看到它
+        reflection_agent.record_output(round_id, "brain_summary", summary_text)
+
+        # 保存 Agent 总结到长期记忆
+        if longterm_mem is not None:
+            longterm_mem.save("assistant", summary_text)
+    
     elif action_label in ("ignore", "repeat", "fatal_error", "done_yet"):
         deleted_count = await chat_agent.memory.delete(
-            msg_ids=[trigger_msg_2.id, summary_msg.id]
+            msg_ids=[summary_msg.id]
+        )
+        # 同步删除 ReflectionAgent 短期记忆中的对应消息
+        await reflection_agent.memory.delete(
+            msg_ids=[summary_msg.id]
         )
         print(f"[Reflection] 🗑️ 忽略回答（action={action_label}），已从 memory 删除 {deleted_count} 条消息")
         
-    else:
-        print(f"[Reflection] ⚠️ 未知 action='{action_label}'，默认不进入输出调度器")
-
     # 标记本次 brain_summary 已同步，下次 midway/brain_summary 从此处增量
     brain_bg.brain.mark_midway_synced()
 

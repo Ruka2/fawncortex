@@ -39,13 +39,14 @@ from collections import defaultdict
 from agentscope.model import OpenAIChatModel
 from agentscope.message import Msg
 from agentscope.tool import Toolkit
+from agentscope.embedding import OpenAITextEmbedding
 
 from fawncortex.agent.chat_agent import ChatAgent
 from fawncortex.agent.emotion_agent import EmotionAgent
 from fawncortex.agent.brain_agent import BrainAgent
 from fawncortex.agent.reflection_agent import ReflectionAgent
 
-from fawncortex.base.memory import create_long_term_memory
+from fawncortex.base.memory import create_summarize_memory, LongTermMemory
 from fawncortex.tools.search_memory import (
     set_memory_manager,
     retrieve_from_memory,
@@ -542,6 +543,9 @@ class FawnCortexEngine:
         await self.reflection_agent.memory.clear()
         await self.brain_agent.agent.memory.clear()
 
+        # 3.5 清空 ReflectionAgent 的轮次输出索引（避免旧会话污染去重）
+        self.reflection_agent.clear_round_outputs()
+
         # 4. 重置 BrainAgent 的 ReAct 追踪器
         self.brain_agent.reset_react_tracker()
 
@@ -618,7 +622,7 @@ class FawnCortexEngine:
 
         # 2. 长期记忆
         memory_cfg = config.LLM_ROLE_CONFIG.get("memory", {})
-        self.long_term_memory = create_long_term_memory(
+        self.long_term_memory = create_summarize_memory(
             agent_name=self.agent_name,
             user_name=self.user_name,
             vector_store_path=config.MEM0_VECTOR_STORE_PATH,
@@ -632,6 +636,19 @@ class FawnCortexEngine:
             embedding_base_url=config.EMBEDDING_BASE_URL,
         )
         set_memory_manager(self.long_term_memory)
+
+        # 2.5 初始化全量对话归档长期记忆（LongTermMemory）
+        self.longterm_mem = LongTermMemory(
+            agent_name=self.agent_name,
+            user_name=self.user_name,
+            vector_store_path=config.LONGTERM_VECTOR_STORE_PATH,
+            rawtext_db_path=config.LONGTERM_RAWTEXT_DB_PATH,
+            embedding_model=OpenAITextEmbedding(
+                model_name=config.EMBEDDING_MODEL_NAME,
+                api_key=config.EMBEDDING_API_KEY,
+                base_url=config.EMBEDDING_BASE_URL,
+            ),
+        )
 
         # 3. 按角色创建 LLM
         chat_model = build_model_for_role("chat", stream=config.STREAM)
@@ -664,7 +681,10 @@ class FawnCortexEngine:
             long_term_memory=self.long_term_memory,
             toolkit=toolkit,
         )
-        self.reflection_agent = ReflectionAgent(model=reflection_model)
+        self.reflection_agent = ReflectionAgent(
+            model=reflection_model,
+            longterm_memory=self.longterm_mem,
+        )
 
         # 5. 事件总线 + 后台 BrainAgent
         self.bus = EventBus()
@@ -750,7 +770,12 @@ class FawnCortexEngine:
                     round_start = time.perf_counter()
                     self.latency_tracker.start_round(round_num, user_input)
 
+                    # ── 保存用户对话到长期记忆 ──
+                    self.longterm_mem.save("user", user_input)
 
+                    # ── 同步用户输入到 ReflectionAgent 短期记忆 ──
+                    await self.reflection_agent.observe(msg)
+                    
                     # ── 向后台 BrainAgent 投递事件 ──
                     await self.bus.publish("user.input", UserInputEvent(
                         msg=msg, round_id=round_num
@@ -758,6 +783,12 @@ class FawnCortexEngine:
 
                     # ── 前台并行轨道：ChatAgent + EmotionAgent ──
                     chat_result, emotion_result, chat_elapsed, emotion_elapsed = await self.front_stage.respond(msg)
+
+                    # ── 同步前台回复到 ReflectionAgent 短期记忆 ──
+                    if chat_result:
+                        await self.reflection_agent.observe(chat_result)
+                        # 记录 chat 回复到 _round_outputs，供后续 midway/brain_summary 去重比较
+                        self.reflection_agent.record_output(round_num, "chat", chat_result.get_text_content() or "")
 
                     # Emit ChatAgent 结果
                     if chat_result:
@@ -862,7 +893,6 @@ class FawnCortexEngine:
                                 summary_thought=summary_thought,
                                 current_emotion=current_emotion,
                                 current_tone=current_tone,
-                                source_label="brain_summary",
                             )
 
                     except asyncio.TimeoutError:
@@ -916,7 +946,6 @@ class FawnCortexEngine:
                                 user_input=user_input,
                                 summary_thought=summary_thought,
                                 current_emotion=current_emotion,
-                                source_label="brain_summary",
                             )
                         else:
                             await self.emitter.emit("error", {
@@ -1018,14 +1047,14 @@ class FawnCortexEngine:
             # Patch reflection_agent.judge_each_chat 以捕获 midway 的判决
             original_judge = self.reflection_agent.judge_each_chat
 
-            async def patched_judge(user_input, agent_response, chat_history):
+            async def patched_judge(user_input, agent_response, round_id):
                 judge_start = time.perf_counter()
-                result = await original_judge(user_input, agent_response, chat_history)
+                result = await original_judge(user_input, agent_response, round_id)
                 judge_elapsed = time.perf_counter() - judge_start
                 self._last_reflection_action = result.action
-                # 序列化 chat_history 供前端展示
+                # 序列化 reflection_context 供前端展示
                 history = []
-                for msg in chat_history:
+                for msg in self.reflection_agent._reflection_context:
                     history.append({
                         "role": getattr(msg, "role", ""),
                         "name": getattr(msg, "name", ""),
@@ -1059,6 +1088,8 @@ class FawnCortexEngine:
                     stop_event=stop_event,
                     user_name=self.user_name,
                     user_input=user_input,
+                    longterm_mem=self.longterm_mem,
+                    round_id=round_id,
                 )
             finally:
                 self.reflection_agent.judge_each_chat = original_judge
@@ -1076,7 +1107,6 @@ class FawnCortexEngine:
         summary_thought: str,
         current_emotion: str,
         current_tone: str,
-        source_label: str,
     ) -> None:
         """包装 brain_summary，捕获总结消息和 Reflection 判决并 emit 事件。"""
         # 【关键修复】等待当前 TTS 播放完成，避免打断正在播放的 midway 语音
@@ -1092,7 +1122,7 @@ class FawnCortexEngine:
                 await self.emitter.emit("chat_message", {
                     "round_id": round_id,
                     "text": summary_text,
-                    "source": source_label,
+                    "source": "brain_summary",
                     "role": "assistant",
                 })
             return result
@@ -1101,14 +1131,14 @@ class FawnCortexEngine:
         try:
             original_judge = self.reflection_agent.judge_each_chat
 
-            async def patched_judge(user_input, agent_response, chat_history):
+            async def patched_judge(user_input, agent_response, round_id):
                 judge_start = time.perf_counter()
-                result = await original_judge(user_input, agent_response, chat_history)
+                result = await original_judge(user_input, agent_response, round_id)
                 judge_elapsed = time.perf_counter() - judge_start
                 self._last_reflection_action = result.action
-                # 序列化 chat_history 供前端展示
+                # 序列化 reflection_context 供前端展示
                 history = []
-                for msg in chat_history:
+                for msg in self.reflection_agent._reflection_context:
                     history.append({
                         "role": getattr(msg, "role", ""),
                         "name": getattr(msg, "name", ""),
@@ -1119,7 +1149,7 @@ class FawnCortexEngine:
                     "action": result.action,
                     "target": result.target,
                     "agent_response": agent_response,
-                    "source": source_label,
+                    "source": "brain_summary",
                     "chat_history": history,
                     "elapsed": round(judge_elapsed, 3),
                 })
@@ -1140,8 +1170,9 @@ class FawnCortexEngine:
                     user_input=user_input,
                     summary_thought=summary_thought,
                     brain_bg=self.brain_bg,
-                    source_label=source_label,
                     user_name=self.user_name,
+                    longterm_mem=self.longterm_mem,
+                    round_id=round_id,
                 )
             finally:
                 self.reflection_agent.judge_each_chat = original_judge

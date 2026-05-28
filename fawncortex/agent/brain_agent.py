@@ -142,17 +142,26 @@ class BrainAgent:
                 else:
                     self._sub_status = "idle"
 
-                self._iter_results.append({
-                    "iter": self._current_iter,
-                    "reasoning_text": text,
-                    "tool_calls": tool_uses,
-                    "timestamp": datetime.now().isoformat(),
-                    "acting": None,
-                })
-                print(
-                    f"[BrainAgent] 🔄 第 {self._current_iter} 轮 reasoning 完成"
-                    f"（tool_calls={len(tool_uses)}）"
-                )
+                # 【修复】过滤连续重复的 reasoning 轮次，避免 ReAct 重复思考导致内容冗余
+                is_duplicate = False
+                if text and text.strip() and self._iter_results:
+                    last_text = self._iter_results[-1].get("reasoning_text", "")
+                    if last_text.strip() == text.strip():
+                        is_duplicate = True
+                        print(f"[BrainAgent] 🔄 第 {self._current_iter} 轮 reasoning 完成（与上一轮重复，跳过保存）")
+
+                if not is_duplicate:
+                    self._iter_results.append({
+                        "iter": self._current_iter,
+                        "reasoning_text": text,
+                        "tool_calls": tool_uses,
+                        "timestamp": datetime.now().isoformat(),
+                        "acting": None,
+                    })
+                    print(
+                        f"[BrainAgent] 🔄 第 {self._current_iter} 轮 reasoning 完成"
+                        f"（tool_calls={len(tool_uses)}）"
+                    )
             except Exception as e:
                 # 追踪 hook 内部异常不得外抛，避免破坏 ReAct 流程
                 print(f"[BrainAgent] ⚠️ post_reasoning hook 异常（已吞）: {e}")
@@ -233,20 +242,29 @@ class BrainAgent:
                     self._has_used_tools = True
                 else:
                     self._sub_status = "idle"
-                self._iter_results.append({
-                    "iter": self._current_iter,
-                    "reasoning_text": text,
-                    "tool_calls": tool_uses,
-                    "timestamp": datetime.now().isoformat(),
-                    "reasoning_start_ts": reasoning_start,
-                    "reasoning_end_ts": reasoning_end,
-                    "reasoning_sec": round(reasoning_end - reasoning_start, 3),
-                    "acting": None,
-                })
-                print(
-                    f"[BrainAgent] 🔄 第 {self._current_iter} 轮 reasoning 完成"
-                    f"（tool_calls={len(tool_uses)}）"
-                )
+                # 【修复】过滤连续重复的 reasoning 轮次
+                is_duplicate = False
+                if text and text.strip() and self._iter_results:
+                    last_text = self._iter_results[-1].get("reasoning_text", "")
+                    if last_text.strip() == text.strip():
+                        is_duplicate = True
+                        print(f"[BrainAgent] 🔄 第 {self._current_iter} 轮 reasoning 完成（与上一轮重复，跳过保存）")
+
+                if not is_duplicate:
+                    self._iter_results.append({
+                        "iter": self._current_iter,
+                        "reasoning_text": text,
+                        "tool_calls": tool_uses,
+                        "timestamp": datetime.now().isoformat(),
+                        "reasoning_start_ts": reasoning_start,
+                        "reasoning_end_ts": reasoning_end,
+                        "reasoning_sec": round(reasoning_end - reasoning_start, 3),
+                        "acting": None,
+                    })
+                    print(
+                        f"[BrainAgent] 🔄 第 {self._current_iter} 轮 reasoning 完成"
+                        f"（tool_calls={len(tool_uses)}）"
+                    )
             except Exception as e:
                 print(f"[BrainAgent] ⚠️ post_reasoning 包装异常（已吞）: {e}")
             return output
@@ -343,12 +361,24 @@ class BrainAgent:
 
         配合 mark_stream_synced() 使用，确保每次 midway 只追加新增部分，
         避免完整快照导致的重复累积。
+
+        【修复】额外检查：如果 delta 和 _iter_results 最后一轮 reasoning 的
+        完整文本完全相同，说明该轮已完成且已通过 get_new_reasonings_since_last_sync()
+        返回，此处返回空以避免 brain_summary/midway_watcher 中重复拼接。
         """
         current = self._stream_buffer
         last = self._last_stream_sync_len
-        if len(current) > last:
-            return current[last:]
-        return ""
+        if len(current) <= last:
+            return ""
+        delta = current[last:]
+
+        # 【修复】如果 delta 和 _iter_results 最后一轮完全相同，返回空
+        if self._iter_results:
+            last_iter_text = self._iter_results[-1].get("reasoning_text", "")
+            if last_iter_text and last_iter_text.strip() == delta.strip():
+                return ""
+
+        return delta
 
     def mark_stream_synced(self) -> None:
         """标记当前流式内容已同步到 chat_agent，更新增量指针。"""

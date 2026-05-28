@@ -94,8 +94,13 @@ TTS_VOICE = os.getenv("TTS_VOICE", "")
 
 ### 项目文件存放位置
 # 缓存数据存放位置
-MEM0_VECTOR_STORE_PATH = "./data/db/mem0_embedd_chroma"
-MEM0_HISTORY_DB_PATH = "./data/db/raw_history.db"
+# summarize_mem: BrainAgent 工具挑选记忆的存储（Chroma 向量库 + SQLite 原始文本）
+MEM0_VECTOR_STORE_PATH = "./data/db/summarize_mem"
+MEM0_HISTORY_DB_PATH = "./data/db/summarize_mem/rawtext.db"
+
+# longterm_mem: 全量对话自动归档的独立长期记忆（与 summarize_mem 完全隔离）
+LONGTERM_VECTOR_STORE_PATH = "./data/db/longterm_mem"
+LONGTERM_RAWTEXT_DB_PATH = "./data/db/longterm_mem/rawtext.db"
 
 # 日志存放位置
 LOG_DIR = "./logs"

@@ -15,6 +15,7 @@ import time
 from agentscope.model import OpenAIChatModel
 from agentscope.message import Msg
 from agentscope.tool import Toolkit
+from agentscope.embedding import OpenAITextEmbedding
 
 # 自定义智能体依赖
 from fawncortex.agent.chat_agent import ChatAgent
@@ -23,7 +24,7 @@ from fawncortex.agent.brain_agent import BrainAgent
 from fawncortex.agent.reflection_agent import ReflectionAgent
 
 # 自定义智能体记忆的实例类
-from fawncortex.base.memory import create_long_term_memory
+from fawncortex.base.memory import create_summarize_memory, LongTermMemory
 
 # 外部引用工具
 from fawncortex.tools.search_memory import (
@@ -110,7 +111,7 @@ async def main() -> None:
 
     # ── 初始化长期记忆实例（mem0） ──
     memory_cfg = config.LLM_ROLE_CONFIG.get("memory", {})
-    long_term_memory = create_long_term_memory(
+    long_term_memory = create_summarize_memory(
         agent_name=config.AGENT_NAME,
         user_name=config.USER_NAME,
         vector_store_path=config.MEM0_VECTOR_STORE_PATH,
@@ -124,7 +125,21 @@ async def main() -> None:
         embedding_base_url=config.EMBEDDING_BASE_URL,
     )
     set_memory_manager(long_term_memory)
-    print(f"[init] 长期记忆已初始化: {config.MEM0_HISTORY_DB_PATH}")
+    print(f"[init] 工具挑选记忆已初始化: {config.MEM0_HISTORY_DB_PATH}")
+
+    # ── 初始化全量对话归档长期记忆（LongTermMemory）──
+    longterm_mem = LongTermMemory(
+        agent_name=config.AGENT_NAME,
+        user_name=config.USER_NAME,
+        vector_store_path=config.LONGTERM_VECTOR_STORE_PATH,
+        rawtext_db_path=config.LONGTERM_RAWTEXT_DB_PATH,
+        embedding_model=OpenAITextEmbedding(
+            model_name=config.EMBEDDING_MODEL_NAME,
+            api_key=config.EMBEDDING_API_KEY,
+            base_url=config.EMBEDDING_BASE_URL,
+        ),
+    )
+    print(f"[init] 全量对话归档记忆已初始化: {config.LONGTERM_VECTOR_STORE_PATH}")
 
 
     # ── 按角色创建专用大模型实例 ──
@@ -171,7 +186,10 @@ async def main() -> None:
         long_term_memory=long_term_memory,
         toolkit=toolkit,
     )
-    reflection_agent = ReflectionAgent(model=reflection_model)
+    reflection_agent = ReflectionAgent(
+        model=reflection_model,
+        longterm_memory=longterm_mem,
+    )
     print("[init] 核心智能体集群已创建: ChatAgent, EmotionAgent, BrainAgent, ReflectionAgent")
 
     # ── 初始化事件总线 + 后台 BrainAgent 挂载 ──
@@ -231,6 +249,12 @@ async def main() -> None:
 
                 round_start = time.perf_counter()
                 latency_tracker.start_round(round_num, user_input)
+                
+                # —— 保存用户对话到长期记忆中 --
+                longterm_mem.save("user", user_input)
+
+                # ── 同步用户输入到 ReflectionAgent 短期记忆 ──
+                await reflection_agent.observe(msg)
 
                 # ── 向后台 BrainAgent 投递事件（非阻塞）──
                 # 【BrainAgent】 大脑智能体在后台独立运行，不阻塞前台响应
@@ -241,6 +265,12 @@ async def main() -> None:
                 # ── 6.3 前台并行轨道：ChatAgent + EmotionAgent ──
                 # 【前台智能体】由 FrontStagePipeline 统一封装并行执行 + 结果组合 + 输出调度
                 chat_result, emotion_result, chat_elapsed, emotion_elapsed = await front_stage.respond(msg)
+
+                # ── 同步前台回复到 ReflectionAgent 短期记忆 ──
+                if chat_result:
+                    await reflection_agent.observe(chat_result)
+                    # 记录 chat 回复到 _round_outputs，供后续 midway/brain_summary 去重比较
+                    reflection_agent.record_output(round_num, "chat", chat_result.get_text_content() or "")
 
                 # 记录当前轮次的表情，如果有以下pipeline想要复用的话
                 current_emotion, current_tone = EmotionAgent.parse_action(emotion_result.get_text_content())
@@ -268,6 +298,8 @@ async def main() -> None:
                         stop_event=current_stop_event,
                         user_name=config.USER_NAME,
                         user_input=user_input,
+                        longterm_mem=longterm_mem,
+                        round_id=round_num,
                     )
                 )
 
@@ -311,8 +343,9 @@ async def main() -> None:
                             user_input=user_input,
                             summary_thought=summary_thought,
                             brain_bg=brain_bg,
-                            source_label="brain_summary",
                             user_name=config.USER_NAME,
+                            longterm_mem=longterm_mem,
+                            round_id=round_num,
                         )
                                                     
 
@@ -356,8 +389,9 @@ async def main() -> None:
                             user_input=user_input,
                             summary_thought=summary_thought,
                             brain_bg=brain_bg,
-                            source_label="brain_summary",
                             user_name=config.USER_NAME,
+                            longterm_mem=longterm_mem,
+                            round_id=round_num,
                         )
                     else:
                         print("[BrainSummary] ⚠️ 超时后无可用思考内容，跳过总结")

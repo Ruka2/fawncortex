@@ -607,7 +607,8 @@ function addChatBubble(role, text, roundId, sourceTag = null) {
         if (sourceTag) {
             const tag = document.createElement('span');
             tag.className = `source-tag ${sourceTag}`;
-            tag.textContent = sourceTag;
+            const tagMap = { chat: '快速', midway: '追答', brain_summary: '总结' };
+            tag.textContent = tagMap[sourceTag] || sourceTag;
             meta.appendChild(tag);
         }
 
@@ -684,7 +685,7 @@ function addRoundStatsCard(data) {
         // },
         {
             label: '处理总时长',
-            desc: '本轮异步编排全部推理时间消耗',
+            desc: '本轮所有智能体总推理时间',
             value: `${data.round_without_tts_s.toFixed(2)}s`,
         },
     ];
